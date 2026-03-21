@@ -1,7 +1,7 @@
 """
 채널별 콘텐츠 발송
 - 텔레그램
-- 솔라피 SMS (1차 운영 채널)
+- 솔라피 SMS (비용 이슈로 기본 비활성화)
 - 인스타그램 (Meta Graph API, 보류)
 """
 from __future__ import annotations
@@ -33,6 +33,18 @@ META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
 META_INSTAGRAM_ID = os.getenv("META_INSTAGRAM_ID")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "y", "yes", "on"}
+
+
+SEND_TELEGRAM_ENABLED = _env_flag("SEND_TELEGRAM_ENABLED", True)
+SEND_SMS_ENABLED = _env_flag("SEND_SMS_ENABLED", False)
+SEND_INSTAGRAM_ENABLED = _env_flag("SEND_INSTAGRAM_ENABLED", False)
+
+
 def _split_csv(value: str | None) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
 
@@ -46,6 +58,12 @@ def _normalize_phone_number(phone_number: str) -> str:
 
 def _build_result(success: bool, detail: str, **extra: Any) -> dict[str, Any]:
     payload = {"success": success, "detail": detail}
+    payload.update(extra)
+    return payload
+
+
+def _build_skipped_result(detail: str, **extra: Any) -> dict[str, Any]:
+    payload = {"success": True, "skipped": True, "detail": detail}
     payload.update(extra)
     return payload
 
@@ -75,6 +93,8 @@ def get_solapi_balance() -> dict[str, Any]:
 
 def send_telegram(message: str) -> dict[str, Any]:
     """텔레그램 메시지 발송"""
+    if not SEND_TELEGRAM_ENABLED:
+        return _build_skipped_result("SEND_TELEGRAM_ENABLED=0 으로 텔레그램 발송을 건너뜁니다.")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return _build_result(False, "TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 가 비어 있습니다.")
 
@@ -112,6 +132,8 @@ def send_sms(
     subject: str | None = None,
 ) -> dict[str, Any]:
     """솔라피 SMS/LMS 발송"""
+    if not SEND_SMS_ENABLED:
+        return _build_skipped_result("SEND_SMS_ENABLED=0 으로 SMS 발송을 건너뜁니다.")
     recipients = phone_numbers or _split_csv(SOLAPI_DEFAULT_RECIPIENTS)
     sender = sender_number or SOLAPI_SENDER
 
@@ -172,6 +194,8 @@ def send_alimtalk(message: str, phone_numbers: list[str]) -> dict[str, Any]:
 
 def post_instagram(caption: str, image_url: str | None = None) -> dict[str, Any]:
     """인스타그램 게시물 업로드 (Meta Graph API)"""
+    if not SEND_INSTAGRAM_ENABLED:
+        return _build_skipped_result("SEND_INSTAGRAM_ENABLED=0 으로 인스타그램 업로드를 건너뜁니다.")
     if not META_ACCESS_TOKEN or not META_INSTAGRAM_ID:
         return _build_result(False, "인스타그램 계정/토큰 미설정으로 테스트를 건너뜁니다.")
     return _build_result(False, "인스타그램 업로드는 아직 구현되지 않았습니다.", image_url=image_url, caption=caption)
