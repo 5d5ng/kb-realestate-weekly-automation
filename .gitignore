@@ -1,0 +1,19 @@
+# Environment
+.env
+
+# Python cache / virtualenv
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# macOS / editor
+.DS_Store
+
+# Generated artifacts
+downloads/
+reports/
