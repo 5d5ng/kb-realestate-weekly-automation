@@ -262,6 +262,7 @@ def run_pipeline(
     news_days: int = 7,
     news_max_articles: int = 12,
     transaction_limit: int = 5,
+    channel_overrides: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """전체 파이프라인 실행 컨트롤러"""
     from analyzer import run_analysis
@@ -320,7 +321,7 @@ def run_pipeline(
 
         current_stage = "send"
         if send:
-            send_results = send_all(contents)
+            send_results = send_all(contents, channel_overrides=channel_overrides)
             _log("채널 발송 완료")
         else:
             send_results = {
@@ -337,6 +338,7 @@ def run_pipeline(
             "duration_sec": duration_sec,
             "send_enabled": send,
             "trigger": trigger,
+            "channel_overrides": channel_overrides or {},
             "analysis_summary": analysis_summary,
             "transaction_summary": transaction_summary,
             "news_summary": news_summary,
@@ -362,6 +364,7 @@ def run_pipeline(
             "reason": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "channel_overrides": channel_overrides or {},
             "manual_override": True,
         }
     except PipelineBusyError as exc:
@@ -382,6 +385,7 @@ def run_pipeline(
             "reason": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "channel_overrides": channel_overrides or {},
         }
     except Exception as exc:
         duration_sec = round(time.perf_counter() - started_perf, 2)
@@ -400,6 +404,7 @@ def run_pipeline(
             "error": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "channel_overrides": channel_overrides or {},
         }
     finally:
         _finish_pipeline_lock(lock_handle, run_context)

@@ -5,6 +5,7 @@ import os
 from flask import Flask, jsonify, render_template_string, request
 
 from scheduler import init_scheduler, run_pipeline
+from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED
 
 app = Flask(__name__)
 
@@ -96,6 +97,39 @@ INDEX_TEMPLATE = """
       background: #fff;
       font-size: 14px;
     }
+    .channel-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .channel-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+    .channel-item input[type="checkbox"] {
+      width: auto;
+      margin-top: 2px;
+      accent-color: var(--accent);
+    }
+    .channel-copy {
+      display: grid;
+      gap: 4px;
+    }
+    .channel-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .channel-desc {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
     .actions {
       display: flex;
       gap: 10px;
@@ -172,7 +206,7 @@ INDEX_TEMPLATE = """
       <form class="card" id="send-form">
         <span class="badge warn">주의</span>
         <h2>실제 발송</h2>
-        <p>텔레그램과 SOLAPI SMS 가 실제 발송됩니다. 수신 설정을 다시 확인한 뒤 실행하세요.</p>
+        <p>이번 실행에서 사용할 플랫폼을 직접 고를 수 있습니다. 체크한 채널만 발송됩니다.</p>
 
         <label for="send-news-days">뉴스 수집 기간</label>
         <input id="send-news-days" name="news_days" type="number" min="1" value="1">
@@ -182,6 +216,45 @@ INDEX_TEMPLATE = """
 
         <label for="send-transaction-limit">실거래 건수</label>
         <input id="send-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
+
+        <label>발송 플랫폼</label>
+        <div class="channel-list">
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_telegram"
+              {% if default_channels.telegram %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">텔레그램</span>
+              <span class="channel-desc">운영 기본 채널입니다. 텍스트 리포트를 바로 전송합니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_sms"
+              {% if default_channels.sms %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">SMS / 알림 메시지</span>
+              <span class="channel-desc">솔라피를 통해 발송합니다. 비용이 발생할 수 있습니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_instagram"
+              {% if default_channels.instagram %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">인스타그램</span>
+              <span class="channel-desc">현재 업로드 기능은 보류 상태입니다. 켜도 스킵될 수 있습니다.</span>
+            </span>
+          </label>
+        </div>
 
         <div class="actions">
           <button type="submit" class="secondary">실제 발송 실행</button>
@@ -198,10 +271,23 @@ INDEX_TEMPLATE = """
   </div>
 
   <script>
+    function buildPayload(form, send) {
+      const formData = new FormData(form);
+      const data = Object.fromEntries(formData.entries());
+      data.send = send;
+
+      if (send) {
+        data.send_telegram = form.querySelector('input[name="send_telegram"]')?.checked || false;
+        data.send_sms = form.querySelector('input[name="send_sms"]')?.checked || false;
+        data.send_instagram = form.querySelector('input[name="send_instagram"]')?.checked || false;
+      }
+
+      return data;
+    }
+
     async function submitForm(form, send) {
       const resultEl = document.getElementById("result");
-      const data = Object.fromEntries(new FormData(form).entries());
-      data.send = send;
+      const data = buildPayload(form, send);
 
       resultEl.textContent = "실행 중입니다. 외부 API 호출 때문에 1~수 분 정도 걸릴 수 있습니다.";
 
@@ -229,7 +315,7 @@ INDEX_TEMPLATE = """
 
     document.getElementById("send-form").addEventListener("submit", function (event) {
       event.preventDefault();
-      const ok = window.confirm("실제 텔레그램/SMS 발송을 진행할까요?");
+      const ok = window.confirm("체크한 플랫폼으로 실제 발송을 진행할까요?");
       if (!ok) return;
       submitForm(event.currentTarget, true);
     });
@@ -256,7 +342,14 @@ def _parse_int(value: object, default: int) -> int:
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_TEMPLATE)
+    return render_template_string(
+        INDEX_TEMPLATE,
+        default_channels={
+            "telegram": SEND_TELEGRAM_ENABLED,
+            "sms": SEND_SMS_ENABLED,
+            "instagram": SEND_INSTAGRAM_ENABLED,
+        },
+    )
 
 
 @app.route("/run", methods=["POST"])
@@ -267,6 +360,11 @@ def run_manual():
     news_days = _parse_int(payload.get("news_days"), default=1)
     news_max_articles = _parse_int(payload.get("news_max_articles"), default=3)
     transaction_limit = _parse_int(payload.get("transaction_limit"), default=2)
+    channel_overrides = {
+        "telegram": _parse_bool(payload.get("send_telegram"), default=False),
+        "sms": _parse_bool(payload.get("send_sms"), default=False),
+        "instagram": _parse_bool(payload.get("send_instagram"), default=False),
+    }
 
     result = run_pipeline(
         send=send,
@@ -274,6 +372,7 @@ def run_manual():
         news_days=news_days,
         news_max_articles=news_max_articles,
         transaction_limit=transaction_limit,
+        channel_overrides=channel_overrides if send else None,
     )
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
