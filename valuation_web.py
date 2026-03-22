@@ -53,6 +53,28 @@ VALUATION_TEMPLATE = """
       font-weight: 700;
       text-decoration: none;
     }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    .hero-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 16px;
+      border-radius: 12px;
+      background: var(--accent);
+      color: white !important;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .hero-link.secondary {
+      background: #334155;
+    }
     h1, h2, h3 {
       margin: 0 0 12px;
     }
@@ -230,6 +252,10 @@ VALUATION_TEMPLATE = """
       <p style="margin-top: 10px;">
         메인 실행기는 <a href="/">/</a> 에 있고, 이 기능은 <code>/valuation</code> 기준으로 따로 분리할 수 있게 만들었습니다.
       </p>
+      <div class="hero-actions">
+        <a class="hero-link" href="/valuation">이 화면 새로고침</a>
+        <a class="hero-link secondary" href="/">메인 실행기로 돌아가기</a>
+      </div>
     </section>
 
     <section class="grid">

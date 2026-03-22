@@ -61,6 +61,28 @@ INDEX_TEMPLATE = """
       background: var(--card);
       box-shadow: 0 14px 40px rgba(80, 62, 32, 0.08);
     }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    .hero-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 16px;
+      border-radius: 12px;
+      background: var(--accent);
+      color: white;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .hero-link.secondary {
+      background: #334155;
+    }
     h1, h2 {
       margin: 0 0 12px;
     }
@@ -74,6 +96,25 @@ INDEX_TEMPLATE = """
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 18px;
       margin-top: 22px;
+    }
+    .service-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+    .service-link-card {
+      display: grid;
+      gap: 12px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(255, 253, 248, 0.92);
+      box-shadow: 0 10px 24px rgba(80, 62, 32, 0.05);
+    }
+    .service-link-card a {
+      width: fit-content;
+      text-decoration: none;
     }
     .card {
       padding: 20px;
@@ -285,6 +326,25 @@ INDEX_TEMPLATE = """
       <p style="margin-top: 10px;">
         단지 상대가치 분석 서비스는 <code>/valuation</code> 에서 별도 화면으로 사용할 수 있습니다.
       </p>
+      <div class="hero-actions">
+        <a class="hero-link" href="/">주간 자동화 실행기</a>
+        <a class="hero-link secondary" href="/valuation">적정 시세 분석 열기</a>
+      </div>
+    </section>
+
+    <section class="service-strip">
+      <div class="service-link-card">
+        <span class="badge">메인 서비스</span>
+        <h2>주간 자동화 실행</h2>
+        <p>KB 분석, 실거래, 뉴스, 콘텐츠 생성, 발송까지 현재 운영 중인 메인 흐름입니다.</p>
+        <a class="hero-link" href="/">이 화면에서 실행</a>
+      </div>
+      <div class="service-link-card">
+        <span class="badge warn">신규 기능</span>
+        <h2>단지 적정 시세 분석</h2>
+        <p>기준 단지와 비교 단지를 골라 현재 비율, 10년 평균 비율, 상승여력을 따로 확인합니다.</p>
+        <a class="hero-link secondary" href="/valuation">분석 화면 열기</a>
+      </div>
     </section>
 
     <section class="grid">
