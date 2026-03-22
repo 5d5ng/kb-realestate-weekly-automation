@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,8 @@ FILE_DOWNLOAD_API_URL = "https://api.kbland.kr/land-extra/statistics/getfiledown
 DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 TIMEOUT_SEC = 30
 TOP_N = 5
+DOWNLOAD_RETRY_COUNT = 3
+DOWNLOAD_RETRY_DELAY_SEC = 1.0
 
 COMMON_HEADERS = {
     "accept": "application/json, text/plain, */*",
@@ -289,22 +292,62 @@ def _build_download_url(file_info: dict[str, Any]) -> str:
     return f"{FILE_DOWNLOAD_API_URL}?urlpath={encoded_path}&filename={encoded_name}"
 
 
+def _validate_office_file(file_path: Path) -> bool:
+    if not file_path.exists() or file_path.stat().st_size <= 0:
+        return False
+    if not zipfile.is_zipfile(file_path):
+        return False
+
+    try:
+        with zipfile.ZipFile(file_path) as zf:
+            names = set(zf.namelist())
+    except zipfile.BadZipFile:
+        return False
+
+    suffix = file_path.suffix.lower()
+    if suffix == ".xlsx":
+        return "[Content_Types].xml" in names and "xl/workbook.xml" in names
+    if suffix == ".docx":
+        return "[Content_Types].xml" in names and "word/document.xml" in names
+    return True
+
+
 def _download_file(file_info: dict[str, Any], dest_dir: Path) -> Path:
     filename = file_info["원본파일명"].replace("/", "_").strip()
     save_path = dest_dir / filename
-    # 이미 다운로드된 경우 재사용
-    if save_path.exists():
+
+    # 이미 다운로드된 경우 유효성 검증 후 재사용
+    if save_path.exists() and _validate_office_file(save_path):
         return save_path
+    save_path.unlink(missing_ok=True)
 
     url = _build_download_url(file_info)
-    resp = requests.get(url, headers=COMMON_HEADERS, timeout=TIMEOUT_SEC, stream=True)
-    resp.raise_for_status()
+    last_error: Exception | None = None
+    temp_path = save_path.with_suffix(save_path.suffix + ".part")
 
-    with open(save_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                f.write(chunk)
-    return save_path
+    for attempt in range(1, DOWNLOAD_RETRY_COUNT + 1):
+        temp_path.unlink(missing_ok=True)
+        try:
+            resp = requests.get(url, headers=COMMON_HEADERS, timeout=TIMEOUT_SEC, stream=True)
+            resp.raise_for_status()
+
+            with open(temp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+
+            if not _validate_office_file(temp_path):
+                raise RuntimeError(f"다운로드 파일 검증 실패: {filename}")
+
+            temp_path.replace(save_path)
+            return save_path
+        except Exception as exc:
+            last_error = exc
+            temp_path.unlink(missing_ok=True)
+            if attempt < DOWNLOAD_RETRY_COUNT:
+                time.sleep(DOWNLOAD_RETRY_DELAY_SEC * attempt)
+
+    raise RuntimeError(f"KB 파일 다운로드 실패: {filename} ({last_error})")
 
 
 def _find_latest_two_rows(ws) -> tuple[list[Any], list[Any]]:
@@ -511,7 +554,10 @@ def parse_excel(file_path: str | Path) -> dict[str, Any]:
         "rent": [{"region": ..., "current": ..., "delta": ...}, ...],
       }
     """
-    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(f"시계열 파일 형식이 올바르지 않습니다: {file_path}") from exc
     try:
         sheet_names = wb.sheetnames
         if len(sheet_names) < 3:
