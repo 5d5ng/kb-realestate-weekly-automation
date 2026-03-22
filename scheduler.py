@@ -9,7 +9,7 @@ import socket
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import fcntl
@@ -41,6 +41,32 @@ def _now_text() -> str:
 
 def _log(message: str) -> None:
     print(f"[{_now_text()}] [pipeline] {message}", flush=True)
+
+
+def _emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    stage: str,
+    message: str,
+    status: str = "running",
+    **extra: Any,
+) -> None:
+    if callback is None:
+        return
+
+    payload = {
+        "time": _now_text(),
+        "stage": stage,
+        "status": status,
+        "message": message,
+    }
+    if extra:
+        payload["extra"] = extra
+
+    try:
+        callback(payload)
+    except Exception:
+        return
 
 
 def _ensure_runtime_dir() -> None:
@@ -263,6 +289,7 @@ def run_pipeline(
     news_max_articles: int = 12,
     transaction_limit: int = 5,
     channel_overrides: dict[str, bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """전체 파이프라인 실행 컨트롤러"""
     from analyzer import run_analysis
@@ -278,6 +305,15 @@ def run_pipeline(
     run_context: dict[str, Any] | None = None
 
     _log(f"파이프라인 시작 | trigger={trigger} | send={send}")
+    _emit_progress(
+        progress_callback,
+        stage="init",
+        message="파이프라인을 시작했습니다.",
+        status="running",
+        trigger=trigger,
+        send=send,
+        channel_overrides=channel_overrides or {},
+    )
 
     try:
         lock_handle, run_context = _acquire_pipeline_lock(trigger)
@@ -287,13 +323,35 @@ def run_pipeline(
             f"| instance={run_context['instance_id']} "
             f"| pid={run_context['pid']}"
         )
+        _emit_progress(
+            progress_callback,
+            stage="lock",
+            message="실행 락을 획득했습니다.",
+            trigger=run_context["trigger"],
+            instance=run_context["instance_id"],
+            pid=run_context["pid"],
+        )
 
+        _emit_progress(progress_callback, stage="analysis", message="KB 분석을 시작합니다.")
         analysis = run_analysis()
         analysis_summary = _summarize_analysis(analysis)
         _log(f"분석 완료 | latest_date={analysis_summary['latest_date']}")
+        _emit_progress(
+            progress_callback,
+            stage="analysis",
+            message="KB 분석이 완료되었습니다.",
+            latest_date=analysis_summary["latest_date"],
+            content_buckets=analysis_summary["content_buckets"],
+        )
         _check_for_manual_override(run_context, current_stage)
 
         current_stage = "transactions"
+        _emit_progress(
+            progress_callback,
+            stage="transactions",
+            message="실거래 조회를 시작합니다.",
+            transaction_limit=transaction_limit,
+        )
         transactions = get_recent_transactions(analysis, limit=transaction_limit)
         transaction_summary = _summarize_transactions(transactions)
         _log(
@@ -302,33 +360,80 @@ def run_pipeline(
             f"| regions={transaction_summary['region_count']} "
             f"| trades={transaction_summary['trade_count']}"
         )
+        _emit_progress(
+            progress_callback,
+            stage="transactions",
+            message="실거래 조회가 완료되었습니다.",
+            bucket_count=transaction_summary["bucket_count"],
+            region_count=transaction_summary["region_count"],
+            trade_count=transaction_summary["trade_count"],
+        )
         _check_for_manual_override(run_context, current_stage)
 
         current_stage = "news"
+        _emit_progress(
+            progress_callback,
+            stage="news",
+            message="뉴스 수집을 시작합니다.",
+            news_days=news_days,
+            news_max_articles=news_max_articles,
+        )
         news = get_weekly_news(days=news_days, max_articles=news_max_articles)
         news_summary = _summarize_news(news)
         _log(f"뉴스 수집 완료 | count={news_summary['count']}")
+        _emit_progress(
+            progress_callback,
+            stage="news",
+            message="뉴스 수집이 완료되었습니다.",
+            count=news_summary["count"],
+            top_titles=news_summary["top_titles"],
+        )
         _check_for_manual_override(run_context, current_stage)
 
         current_stage = "contents"
+        _emit_progress(progress_callback, stage="contents", message="콘텐츠 생성을 시작합니다.")
         contents = generate_all_contents(analysis, news, transactions)
         contents_summary = _summarize_contents(contents)
         _log(
             "콘텐츠 생성 완료 "
             f"| prompt_files={len(contents_summary['prompt_files'])}"
         )
+        _emit_progress(
+            progress_callback,
+            stage="contents",
+            message="콘텐츠 생성이 완료되었습니다.",
+            prompt_files=contents_summary["prompt_files"],
+        )
         _check_for_manual_override(run_context, current_stage)
 
         current_stage = "send"
         if send:
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="선택한 채널로 발송을 시작합니다.",
+                channel_overrides=channel_overrides or {},
+            )
             send_results = send_all(contents, channel_overrides=channel_overrides)
             _log("채널 발송 완료")
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="채널 발송이 완료되었습니다.",
+                send_results=send_results,
+            )
         else:
             send_results = {
                 "skipped": True,
                 "detail": "dry-run mode: 발송을 건너뛰었습니다.",
             }
             _log("dry-run 모드로 발송 생략")
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="dry-run 모드로 발송을 건너뛰었습니다.",
+                status="skipped",
+            )
 
         duration_sec = round(time.perf_counter() - started_perf, 2)
         result = {
@@ -346,6 +451,13 @@ def run_pipeline(
             "send_results": send_results,
         }
         _log(f"파이프라인 종료 | success=True | duration={duration_sec}s")
+        _emit_progress(
+            progress_callback,
+            stage="done",
+            message="파이프라인이 정상 종료되었습니다.",
+            status="completed",
+            duration_sec=duration_sec,
+        )
         return result
     except PipelineOverrideRequested as exc:
         duration_sec = round(time.perf_counter() - started_perf, 2)
@@ -353,6 +465,14 @@ def run_pipeline(
             "예약 실행 중단 "
             f"| duration={duration_sec}s "
             f"| reason={exc}"
+        )
+        _emit_progress(
+            progress_callback,
+            stage=current_stage,
+            message="수동 실행 우선권으로 예약 실행을 중단했습니다.",
+            status="skipped",
+            duration_sec=duration_sec,
+            reason=str(exc),
         )
         return {
             "success": True,
@@ -375,6 +495,14 @@ def run_pipeline(
             f"| duration={duration_sec}s "
             f"| reason={exc}"
         )
+        _emit_progress(
+            progress_callback,
+            stage=current_stage,
+            message="다른 실행이 진행 중이라 이번 요청을 건너뜁니다.",
+            status="skipped",
+            duration_sec=duration_sec,
+            reason=str(exc),
+        )
         return {
             "success": True,
             "skipped": True,
@@ -394,6 +522,14 @@ def run_pipeline(
             f"| stage={current_stage} "
             f"| duration={duration_sec}s "
             f"| error={exc}"
+        )
+        _emit_progress(
+            progress_callback,
+            stage=current_stage,
+            message="파이프라인이 실패했습니다.",
+            status="failed",
+            duration_sec=duration_sec,
+            error=str(exc),
         )
         return {
             "success": False,

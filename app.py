@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import threading
+from datetime import datetime
+from typing import Any
+from uuid import uuid4
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -8,6 +12,10 @@ from scheduler import init_scheduler, run_pipeline
 from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED
 
 app = Flask(__name__)
+RUN_STATE_LOCK = threading.Lock()
+RUN_STATE: dict[str, dict[str, Any]] = {}
+MAX_RUN_HISTORY = 20
+RUN_SEQUENCE = 0
 
 INDEX_TEMPLATE = """
 <!doctype html>
@@ -166,6 +174,12 @@ INDEX_TEMPLATE = """
       line-height: 1.5;
       font-size: 13px;
     }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
     .hint {
       margin-top: 16px;
       font-size: 13px;
@@ -267,10 +281,24 @@ INDEX_TEMPLATE = """
       수동 API 호출은 <code>POST /run</code> 으로도 가능합니다.
     </p>
 
-    <pre id="result">아직 실행 결과가 없습니다.</pre>
+    <section class="status-grid">
+      <div class="card">
+        <h2>진행 로그</h2>
+        <p>현재 어떤 단계가 실행 중인지 순서대로 표시합니다.</p>
+        <pre id="progress">아직 실행 로그가 없습니다.</pre>
+      </div>
+      <div class="card">
+        <h2>최종 결과</h2>
+        <p>실행이 끝나면 최종 응답 JSON 이 여기에 표시됩니다.</p>
+        <pre id="result">아직 실행 결과가 없습니다.</pre>
+      </div>
+    </section>
   </div>
 
   <script>
+    let activeRunId = null;
+    let activePoller = null;
+
     function buildPayload(form, send) {
       const formData = new FormData(form);
       const data = Object.fromEntries(formData.entries());
@@ -285,20 +313,119 @@ INDEX_TEMPLATE = """
       return data;
     }
 
+    function renderProgress(payload) {
+      const progressEl = document.getElementById("progress");
+      const logs = payload.logs || [];
+      if (!logs.length) {
+        progressEl.textContent = "아직 실행 로그가 없습니다.";
+        return;
+      }
+
+      const lines = logs.map((log) => {
+        const extra = log.extra ? ` | ${JSON.stringify(log.extra)}` : "";
+        return `[${log.time}] [${log.stage}] ${log.message}${extra}`;
+      });
+      progressEl.textContent = lines.join("\\n");
+    }
+
+    function renderResult(payload) {
+      const resultEl = document.getElementById("result");
+      if (payload.result) {
+        resultEl.textContent = JSON.stringify(payload.result, null, 2);
+        return;
+      }
+      if (payload.error) {
+        resultEl.textContent = JSON.stringify(payload.error, null, 2);
+        return;
+      }
+      resultEl.textContent = JSON.stringify(payload, null, 2);
+    }
+
+    async function pollRun(runId) {
+      const progressEl = document.getElementById("progress");
+      const resultEl = document.getElementById("result");
+
+      try {
+        const response = await fetch(`/run/status/${runId}`);
+        const payload = await response.json();
+        renderProgress(payload);
+
+        if (payload.status === "completed" || payload.status === "failed" || payload.status === "skipped") {
+          renderResult(payload);
+          if (activePoller) {
+            clearInterval(activePoller);
+            activePoller = null;
+          }
+          activeRunId = null;
+          return;
+        }
+
+        resultEl.textContent = JSON.stringify(
+          {
+            run_id: payload.run_id,
+            status: payload.status,
+            started_at: payload.started_at,
+            current_stage: payload.current_stage,
+          },
+          null,
+          2
+        );
+      } catch (error) {
+        progressEl.textContent += `\\n[error] 상태 조회 실패: ${String(error)}`;
+        if (activePoller) {
+          clearInterval(activePoller);
+          activePoller = null;
+        }
+        activeRunId = null;
+      }
+    }
+
     async function submitForm(form, send) {
+      const progressEl = document.getElementById("progress");
       const resultEl = document.getElementById("result");
       const data = buildPayload(form, send);
 
-      resultEl.textContent = "실행 중입니다. 외부 API 호출 때문에 1~수 분 정도 걸릴 수 있습니다.";
+      if (activePoller) {
+        clearInterval(activePoller);
+        activePoller = null;
+      }
+      activeRunId = null;
+      progressEl.textContent = "실행 요청을 전송했습니다.";
+      resultEl.textContent = "백그라운드 실행을 시작하는 중입니다.";
 
       try {
-        const response = await fetch("/run", {
+        const response = await fetch("/run/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         });
         const payload = await response.json();
-        resultEl.textContent = JSON.stringify(payload, null, 2);
+        if (!response.ok || !payload.run_id) {
+          resultEl.textContent = JSON.stringify(payload, null, 2);
+          return;
+        }
+
+        activeRunId = payload.run_id;
+        progressEl.textContent = `[${payload.started_at}] [init] 실행 요청 등록\\nrun_id=${payload.run_id}`;
+        resultEl.textContent = JSON.stringify(
+          {
+            run_id: payload.run_id,
+            status: payload.status,
+            detail: payload.detail,
+          },
+          null,
+          2
+        );
+
+        await pollRun(payload.run_id);
+        activePoller = setInterval(() => {
+          if (!activeRunId) {
+            clearInterval(activePoller);
+            activePoller = null;
+            return;
+          }
+          pollRun(activeRunId);
+        }, 1500);
       } catch (error) {
         resultEl.textContent = JSON.stringify(
           { success: false, error: String(error) },
@@ -340,6 +467,116 @@ def _parse_int(value: object, default: int) -> int:
         return default
 
 
+def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    send = _parse_bool(payload.get("send"), default=False)
+    news_days = _parse_int(payload.get("news_days"), default=1)
+    news_max_articles = _parse_int(payload.get("news_max_articles"), default=3)
+    transaction_limit = _parse_int(payload.get("transaction_limit"), default=2)
+    channel_overrides = {
+        "telegram": _parse_bool(payload.get("send_telegram"), default=False),
+        "sms": _parse_bool(payload.get("send_sms"), default=False),
+        "instagram": _parse_bool(payload.get("send_instagram"), default=False),
+    }
+    return {
+        "send": send,
+        "news_days": news_days,
+        "news_max_articles": news_max_articles,
+        "transaction_limit": transaction_limit,
+        "channel_overrides": channel_overrides if send else None,
+    }
+
+
+def _trim_run_history() -> None:
+    if len(RUN_STATE) <= MAX_RUN_HISTORY:
+        return
+    sorted_items = sorted(RUN_STATE.items(), key=lambda item: item[1].get("created_order", 0))
+    for run_id, _state in sorted_items[:-MAX_RUN_HISTORY]:
+        RUN_STATE.pop(run_id, None)
+
+
+def _append_run_log(run_id: str, event: dict[str, Any]) -> None:
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return
+        state["logs"].append(event)
+        state["current_stage"] = event.get("stage", state.get("current_stage"))
+        state["updated_at"] = event.get("time")
+
+
+def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
+    def progress_callback(event: dict[str, Any]) -> None:
+        _append_run_log(run_id, event)
+
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return
+        state["status"] = "running"
+
+    result = run_pipeline(
+        send=options["send"],
+        trigger="manual",
+        news_days=options["news_days"],
+        news_max_articles=options["news_max_articles"],
+        transaction_limit=options["transaction_limit"],
+        channel_overrides=options["channel_overrides"],
+        progress_callback=progress_callback,
+    )
+
+    final_status = "completed" if result.get("success") and not result.get("skipped") else "failed"
+    if result.get("skipped"):
+        final_status = "skipped"
+
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return
+        state["status"] = final_status
+        state["result"] = result
+        state["updated_at"] = result.get("completed_at")
+
+
+def _start_background_run(options: dict[str, Any]) -> dict[str, Any]:
+    global RUN_SEQUENCE
+    run_id = uuid4().hex
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with RUN_STATE_LOCK:
+        RUN_SEQUENCE += 1
+        RUN_STATE[run_id] = {
+            "run_id": run_id,
+            "status": "queued",
+            "started_at": started_at,
+            "updated_at": started_at,
+            "created_order": RUN_SEQUENCE,
+            "current_stage": "queued",
+            "options": options,
+            "logs": [
+                {
+                    "time": started_at,
+                    "stage": "queued",
+                    "status": "queued",
+                    "message": "실행 요청이 등록되었습니다.",
+                    "extra": {
+                        "send": options["send"],
+                        "channel_overrides": options.get("channel_overrides") or {},
+                    },
+                }
+            ],
+        }
+        _trim_run_history()
+
+    thread = threading.Thread(target=_execute_run_async, args=(run_id, options), daemon=True)
+    thread.start()
+    return {
+        "success": True,
+        "run_id": run_id,
+        "status": "queued",
+        "started_at": started_at,
+        "detail": "백그라운드 실행을 시작했습니다.",
+    }
+
+
 @app.route("/")
 def index():
     return render_template_string(
@@ -356,26 +593,34 @@ def index():
 def run_manual():
     """수동 실행 엔드포인트"""
     payload = request.get_json(silent=True) or request.form.to_dict() or {}
-    send = _parse_bool(payload.get("send"), default=False)
-    news_days = _parse_int(payload.get("news_days"), default=1)
-    news_max_articles = _parse_int(payload.get("news_max_articles"), default=3)
-    transaction_limit = _parse_int(payload.get("transaction_limit"), default=2)
-    channel_overrides = {
-        "telegram": _parse_bool(payload.get("send_telegram"), default=False),
-        "sms": _parse_bool(payload.get("send_sms"), default=False),
-        "instagram": _parse_bool(payload.get("send_instagram"), default=False),
-    }
+    options = _parse_run_payload(payload)
 
     result = run_pipeline(
-        send=send,
+        send=options["send"],
         trigger="manual",
-        news_days=news_days,
-        news_max_articles=news_max_articles,
-        transaction_limit=transaction_limit,
-        channel_overrides=channel_overrides if send else None,
+        news_days=options["news_days"],
+        news_max_articles=options["news_max_articles"],
+        transaction_limit=options["transaction_limit"],
+        channel_overrides=options["channel_overrides"],
     )
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
+
+
+@app.route("/run/start", methods=["POST"])
+def run_manual_start():
+    payload = request.get_json(silent=True) or request.form.to_dict() or {}
+    options = _parse_run_payload(payload)
+    return jsonify(_start_background_run(options)), 202
+
+
+@app.route("/run/status/<run_id>", methods=["GET"])
+def run_status(run_id: str):
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
+        return jsonify(state)
 
 
 @app.route("/health", methods=["GET"])
