@@ -418,6 +418,112 @@ INDEX_TEMPLATE = """
     .json-block {
       min-height: 240px;
     }
+    .run-attach {
+      display: grid;
+      gap: 14px;
+    }
+    .attach-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .attach-row input {
+      flex: 1 1 220px;
+      min-width: 0;
+    }
+    .recent-run-list {
+      display: grid;
+      gap: 10px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .recent-run-empty {
+      padding: 14px 16px;
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.7);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .recent-run-item {
+      display: grid;
+      gap: 10px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+    }
+    .recent-run-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .recent-run-id {
+      font-family: "SFMono-Regular", "Menlo", monospace;
+      font-size: 12px;
+      color: #334155;
+      word-break: break-all;
+    }
+    .recent-run-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #e2e8f0;
+      color: #334155;
+      white-space: nowrap;
+    }
+    .recent-run-badge.running,
+    .recent-run-badge.queued {
+      background: #ccfbf1;
+      color: #0f766e;
+    }
+    .recent-run-badge.completed {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .recent-run-badge.failed {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .recent-run-badge.skipped {
+      background: #ffedd5;
+      color: #9a3412;
+    }
+    .recent-run-meta {
+      display: grid;
+      gap: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .recent-run-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .mini-button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #1d4ed8;
+      color: white;
+    }
+    .mini-button.secondary {
+      background: #475569;
+    }
     .log-list {
       display: grid;
       gap: 10px;
@@ -711,12 +817,31 @@ INDEX_TEMPLATE = """
         </div>
         <pre id="result" class="json-block">아직 실행 결과가 없습니다.</pre>
       </div>
+      <div class="card">
+        <div class="panel-head">
+          <div class="panel-copy">
+            <div class="panel-title">기존 실행 다시 보기</div>
+            <div class="panel-text">이미 돌고 있는 수동 실행에 다시 붙거나, 최근 실행 기록을 다시 열어 상태를 확인합니다.</div>
+          </div>
+        </div>
+        <div class="run-attach">
+          <div class="attach-row">
+            <input id="attach-run-id" type="text" placeholder="run_id를 입력하세요">
+            <button id="attach-run-button" type="button" class="secondary">run_id로 다시 보기</button>
+            <button id="refresh-runs-button" type="button" class="secondary">최근 실행 새로고침</button>
+          </div>
+          <div id="recent-run-list" class="recent-run-list">
+            <div class="recent-run-empty">아직 기록된 실행이 없습니다.</div>
+          </div>
+        </div>
+      </div>
     </section>
   </div>
 
   <script>
     let activeRunId = null;
     let activePoller = null;
+    const ACTIVE_RUN_STORAGE_KEY = "kb_active_run_id";
     const STAGES = ["queued", "lock", "analysis", "cache", "transactions", "news", "contents", "send", "done"];
     const STAGE_LABELS = {
       queued: "대기",
@@ -892,6 +1017,94 @@ INDEX_TEMPLATE = """
       resultEl.textContent = JSON.stringify(payload, null, 2);
     }
 
+    function attachToRun(runId, { announce = true } = {}) {
+      if (!runId) return;
+      if (activePoller) {
+        clearInterval(activePoller);
+        activePoller = null;
+      }
+      activeRunId = runId;
+      localStorage.setItem(ACTIVE_RUN_STORAGE_KEY, runId);
+
+      if (announce) {
+        document.getElementById("result").textContent = JSON.stringify(
+          {
+            run_id: runId,
+            detail: "기존 실행 상태를 다시 불러오는 중입니다.",
+          },
+          null,
+          2
+        );
+      }
+
+      pollRun(runId);
+      activePoller = setInterval(() => {
+        if (!activeRunId) {
+          clearInterval(activePoller);
+          activePoller = null;
+          return;
+        }
+        pollRun(activeRunId);
+      }, 1500);
+    }
+
+    function renderRecentRuns(payload) {
+      const listEl = document.getElementById("recent-run-list");
+      const runs = payload.runs || [];
+      if (!runs.length) {
+        listEl.innerHTML = '<div class="recent-run-empty">아직 기록된 실행이 없습니다.</div>';
+        return;
+      }
+
+      listEl.innerHTML = runs.map((run) => {
+        const status = escapeHtml(run.status || "unknown");
+        const trigger = escapeHtml(run.trigger || "-");
+        const stage = escapeHtml(STAGE_LABELS[run.current_stage] || run.current_stage || "-");
+        const startedAt = escapeHtml(run.started_at || "-");
+        const updatedAt = escapeHtml(run.updated_at || "-");
+        const runId = escapeHtml(run.run_id || "-");
+        const duration = run.duration_sec == null ? "-" : `${run.duration_sec}s`;
+        return `
+          <div class="recent-run-item">
+            <div class="recent-run-top">
+              <div class="recent-run-id">${runId}</div>
+              <div class="recent-run-badge ${status}">${status}</div>
+            </div>
+            <div class="recent-run-meta">
+              <div>trigger: ${trigger}</div>
+              <div>현재 단계: ${stage}</div>
+              <div>시작: ${startedAt}</div>
+              <div>업데이트: ${updatedAt}</div>
+              <div>소요시간: ${escapeHtml(duration)}</div>
+            </div>
+            <div class="recent-run-actions">
+              <button type="button" class="mini-button" data-run-id="${runId}">이 실행 다시 보기</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      listEl.querySelectorAll("[data-run-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const runId = button.getAttribute("data-run-id");
+          document.getElementById("attach-run-id").value = runId || "";
+          attachToRun(runId || "");
+        });
+      });
+    }
+
+    async function loadRecentRuns() {
+      const listEl = document.getElementById("recent-run-list");
+      listEl.innerHTML = '<div class="recent-run-empty">최근 실행 목록을 불러오는 중입니다.</div>';
+      try {
+        const response = await fetch("/run/recent");
+        const payload = await response.json();
+        renderRecentRuns(payload);
+      } catch (error) {
+        listEl.innerHTML = `<div class="recent-run-empty">최근 실행 목록 조회에 실패했습니다: ${escapeHtml(String(error))}</div>`;
+      }
+    }
+
     async function pollRun(runId) {
       const progressEl = document.getElementById("progress");
       const resultEl = document.getElementById("result");
@@ -910,6 +1123,8 @@ INDEX_TEMPLATE = """
             activePoller = null;
           }
           activeRunId = null;
+          localStorage.removeItem(ACTIVE_RUN_STORAGE_KEY);
+          loadRecentRuns();
           return;
         }
 
@@ -924,7 +1139,7 @@ INDEX_TEMPLATE = """
           2
         );
       } catch (error) {
-        progressEl.textContent += `\\n[error] 상태 조회 실패: ${String(error)}`;
+        progressEl.innerHTML += `<div class="log-entry failed"><div class="log-top"><div class="log-stage">오류</div><div class="log-time">-</div></div><div class="log-message">상태 조회 실패: ${escapeHtml(String(error))}</div></div>`;
         if (activePoller) {
           clearInterval(activePoller);
           activePoller = null;
@@ -961,6 +1176,7 @@ INDEX_TEMPLATE = """
         }
 
         activeRunId = payload.run_id;
+        localStorage.setItem(ACTIVE_RUN_STORAGE_KEY, payload.run_id);
         progressEl.innerHTML = `
           <div class="log-entry running">
             <div class="log-top">
@@ -987,15 +1203,8 @@ INDEX_TEMPLATE = """
           2
         );
 
-        await pollRun(payload.run_id);
-        activePoller = setInterval(() => {
-          if (!activeRunId) {
-            clearInterval(activePoller);
-            activePoller = null;
-            return;
-          }
-          pollRun(activeRunId);
-        }, 1500);
+        loadRecentRuns();
+        attachToRun(payload.run_id, { announce: false });
       } catch (error) {
         resultEl.textContent = JSON.stringify(
           { success: false, error: String(error) },
@@ -1046,11 +1255,27 @@ INDEX_TEMPLATE = """
       if (!ok) return;
       submitForm(event.currentTarget, true);
     });
+    document.getElementById("attach-run-button").addEventListener("click", function () {
+      const runId = document.getElementById("attach-run-id").value.trim();
+      if (!runId) {
+        window.alert("run_id를 입력해 주세요.");
+        return;
+      }
+      attachToRun(runId);
+    });
+    document.getElementById("refresh-runs-button").addEventListener("click", loadRecentRuns);
     document.getElementById("preflight-button").addEventListener("click", runPreflight);
     document.getElementById("telegram-test-button").addEventListener("click", runTelegramTest);
 
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
+    loadRecentRuns();
+
+    const savedRunId = localStorage.getItem(ACTIVE_RUN_STORAGE_KEY);
+    if (savedRunId) {
+      document.getElementById("attach-run-id").value = savedRunId;
+      attachToRun(savedRunId, { announce: false });
+    }
   </script>
 </body>
 </html>
@@ -1286,6 +1511,35 @@ def run_status(run_id: str):
         if not state:
             return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
         return jsonify(state)
+
+
+@app.route("/run/recent", methods=["GET"])
+def run_recent():
+    limit = _parse_int(request.args.get("limit"), default=10)
+    limit = max(1, min(limit, MAX_RUN_HISTORY))
+
+    with RUN_STATE_LOCK:
+        sorted_items = sorted(
+            RUN_STATE.items(),
+            key=lambda item: item[1].get("created_order", 0),
+            reverse=True,
+        )
+        runs = []
+        for run_id, state in sorted_items[:limit]:
+            result = state.get("result") or {}
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "status": state.get("status", "unknown"),
+                    "current_stage": state.get("current_stage", "-"),
+                    "started_at": state.get("started_at", "-"),
+                    "updated_at": state.get("updated_at", "-"),
+                    "trigger": (result.get("trigger") or state.get("options", {}).get("trigger") or "manual"),
+                    "duration_sec": result.get("duration_sec"),
+                }
+            )
+
+    return jsonify({"success": True, "runs": runs})
 
 
 @app.route("/config/status", methods=["GET"])
