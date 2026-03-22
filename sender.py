@@ -23,21 +23,57 @@ except ImportError:  # pragma: no cover - optional dependency in local env
 load_dotenv()
 load_dotenv(".env.example", override=False)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SOLAPI_API_KEY = os.getenv("SOLAPI_API_KEY")
-SOLAPI_API_SECRET = os.getenv("SOLAPI_API_SECRET")
-SOLAPI_SENDER = os.getenv("SOLAPI_SENDER")
-SOLAPI_DEFAULT_RECIPIENTS = os.getenv("SOLAPI_DEFAULT_RECIPIENTS", "")
-META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
-META_INSTAGRAM_ID = os.getenv("META_INSTAGRAM_ID")
-
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "y", "yes", "on"}
+
+
+def _env_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = str(value).strip()
+    if normalized == "":
+        return default
+    return normalized
+
+
+def _mask_secret(value: str | None, *, keep_prefix: int = 4, keep_suffix: int = 4) -> str | None:
+    if not value:
+        return None
+    if len(value) <= keep_prefix + keep_suffix:
+        return "*" * len(value)
+    return f"{value[:keep_prefix]}...{value[-keep_suffix:]}"
+
+
+def _telegram_config_status() -> dict[str, Any]:
+    token = _env_text("TELEGRAM_BOT_TOKEN")
+    chat_id = _env_text("TELEGRAM_CHAT_ID")
+    return {
+        "bot_token_present": bool(token),
+        "chat_id_present": bool(chat_id),
+        "bot_token_masked": _mask_secret(token),
+        "chat_id_masked": _mask_secret(chat_id, keep_prefix=0, keep_suffix=4),
+    }
+
+
+def get_delivery_config_snapshot() -> dict[str, Any]:
+    return {
+        "telegram": _telegram_config_status(),
+        "sms": {
+            "api_key_present": bool(_env_text("SOLAPI_API_KEY")),
+            "api_secret_present": bool(_env_text("SOLAPI_API_SECRET")),
+            "sender_present": bool(_env_text("SOLAPI_SENDER")),
+            "recipients_present": bool(_split_csv(_env_text("SOLAPI_DEFAULT_RECIPIENTS", ""))),
+        },
+        "instagram": {
+            "access_token_present": bool(_env_text("META_ACCESS_TOKEN")),
+            "instagram_id_present": bool(_env_text("META_INSTAGRAM_ID")),
+        },
+    }
 
 
 SEND_TELEGRAM_ENABLED = _env_flag("SEND_TELEGRAM_ENABLED", True)
@@ -77,9 +113,11 @@ def _resolve_channel_enabled(override: bool | None, default: bool) -> bool:
 def _get_solapi_service() -> SolapiMessageService:
     if SolapiMessageService is None or SolapiMessage is None:
         raise RuntimeError("solapi 패키지가 설치되어 있지 않습니다.")
-    if not SOLAPI_API_KEY or not SOLAPI_API_SECRET:
+    api_key = _env_text("SOLAPI_API_KEY")
+    api_secret = _env_text("SOLAPI_API_SECRET")
+    if not api_key or not api_secret:
         raise RuntimeError("SOLAPI_API_KEY 또는 SOLAPI_API_SECRET 이 비어 있습니다.")
-    return SolapiMessageService(SOLAPI_API_KEY, SOLAPI_API_SECRET)
+    return SolapiMessageService(api_key, api_secret)
 
 
 def get_solapi_balance() -> dict[str, Any]:
@@ -101,14 +139,26 @@ def send_telegram(message: str, enabled: bool | None = None) -> dict[str, Any]:
     """텔레그램 메시지 발송"""
     if not _resolve_channel_enabled(enabled, SEND_TELEGRAM_ENABLED):
         return _build_skipped_result("이번 실행 설정으로 텔레그램 발송을 건너뜁니다.")
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return _build_result(False, "TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 가 비어 있습니다.")
+    token = _env_text("TELEGRAM_BOT_TOKEN")
+    chat_id = _env_text("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        config_status = _telegram_config_status()
+        missing = []
+        if not token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not chat_id:
+            missing.append("TELEGRAM_CHAT_ID")
+        return _build_result(
+            False,
+            f"텔레그램 환경변수가 비어 있습니다: {', '.join(missing)}",
+            config_status=config_status,
+        )
 
     try:
         response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{token}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": chat_id,
                 "text": message,
                 "disable_web_page_preview": True,
             },
@@ -141,8 +191,10 @@ def send_sms(
     """솔라피 SMS/LMS 발송"""
     if not _resolve_channel_enabled(enabled, SEND_SMS_ENABLED):
         return _build_skipped_result("이번 실행 설정으로 SMS 발송을 건너뜁니다.")
-    recipients = phone_numbers or _split_csv(SOLAPI_DEFAULT_RECIPIENTS)
-    sender = sender_number or SOLAPI_SENDER
+    recipients = phone_numbers or _split_csv(_env_text("SOLAPI_DEFAULT_RECIPIENTS", ""))
+    sender = sender_number or _env_text("SOLAPI_SENDER")
+    if phone_numbers is None:
+        recipients = _split_csv(_env_text("SOLAPI_DEFAULT_RECIPIENTS", ""))
 
     if not recipients:
         return _build_result(False, "수신번호가 없습니다. phone_numbers 또는 SOLAPI_DEFAULT_RECIPIENTS 를 설정하세요.")
@@ -207,7 +259,7 @@ def post_instagram(
     """인스타그램 게시물 업로드 (Meta Graph API)"""
     if not _resolve_channel_enabled(enabled, SEND_INSTAGRAM_ENABLED):
         return _build_skipped_result("이번 실행 설정으로 인스타그램 업로드를 건너뜁니다.")
-    if not META_ACCESS_TOKEN or not META_INSTAGRAM_ID:
+    if not _env_text("META_ACCESS_TOKEN") or not _env_text("META_INSTAGRAM_ID"):
         return _build_result(False, "인스타그램 계정/토큰 미설정으로 테스트를 건너뜁니다.")
     return _build_result(False, "인스타그램 업로드는 아직 구현되지 않았습니다.", image_url=image_url, caption=caption)
 

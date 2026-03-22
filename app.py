@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
+import zipfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 
 from scheduler import init_scheduler, run_pipeline
 from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED
+from valuation_web import valuation_bp
 
 app = Flask(__name__)
+app.register_blueprint(valuation_bp)
+BASE_DIR = Path(__file__).resolve().parent
+EXPORT_DIR = BASE_DIR / "reports" / "exports"
 RUN_STATE_LOCK = threading.Lock()
 RUN_STATE: dict[str, dict[str, Any]] = {}
 MAX_RUN_HISTORY = 20
@@ -180,6 +187,86 @@ INDEX_TEMPLATE = """
       gap: 18px;
       margin-top: 22px;
     }
+    .status-card {
+      display: grid;
+      gap: 12px;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .meta-item {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+    .meta-label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .meta-value {
+      font-size: 15px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+    .stage-board {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stage-pill {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .stage-pill.running {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .stage-pill.completed {
+      border-color: #15803d;
+      background: #dcfce7;
+      color: #166534;
+    }
+    .stage-pill.failed {
+      border-color: #b91c1c;
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .stage-pill.skipped {
+      border-color: #92400e;
+      background: #ffedd5;
+      color: #9a3412;
+    }
+    .download-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .download-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 12px;
+      background: #1d4ed8;
+      color: white;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+    }
     .hint {
       margin-top: 16px;
       font-size: 13px;
@@ -194,6 +281,9 @@ INDEX_TEMPLATE = """
       <p>
         브라우저에서 바로 <code>dry-run</code> 또는 실제 발송 테스트를 실행할 수 있습니다.
         처음에는 dry-run 으로 돌리고, 결과가 괜찮으면 실제 발송을 권장합니다.
+      </p>
+      <p style="margin-top: 10px;">
+        단지 상대가치 분석 서비스는 <code>/valuation</code> 에서 별도 화면으로 사용할 수 있습니다.
       </p>
     </section>
 
@@ -282,6 +372,32 @@ INDEX_TEMPLATE = """
     </p>
 
     <section class="status-grid">
+      <div class="card status-card">
+        <h2>실행 상태</h2>
+        <p>현재 실행 ID, 상태, 단계, 생성 파일 다운로드를 여기서 바로 확인합니다.</p>
+        <div class="meta-grid">
+          <div class="meta-item">
+            <span class="meta-label">상태</span>
+            <span class="meta-value" id="run-status">대기</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">현재 단계</span>
+            <span class="meta-value" id="run-stage">-</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Run ID</span>
+            <span class="meta-value" id="run-id">-</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">시작 시각</span>
+            <span class="meta-value" id="run-started-at">-</span>
+          </div>
+        </div>
+        <div class="stage-board" id="stage-board"></div>
+        <div class="download-row">
+          <a id="download-artifacts" class="download-link" href="#" hidden>생성 파일 ZIP 다운로드</a>
+        </div>
+      </div>
       <div class="card">
         <h2>진행 로그</h2>
         <p>현재 어떤 단계가 실행 중인지 순서대로 표시합니다.</p>
@@ -298,6 +414,58 @@ INDEX_TEMPLATE = """
   <script>
     let activeRunId = null;
     let activePoller = null;
+    const STAGES = ["queued", "lock", "analysis", "transactions", "news", "contents", "send", "done"];
+
+    function updateRunMeta(payload) {
+      document.getElementById("run-status").textContent = payload.status || "대기";
+      document.getElementById("run-stage").textContent = payload.current_stage || "-";
+      document.getElementById("run-id").textContent = payload.run_id || "-";
+      document.getElementById("run-started-at").textContent = payload.started_at || "-";
+
+      const downloadLink = document.getElementById("download-artifacts");
+      if (payload.artifact_download_url && (payload.status === "completed" || payload.status === "failed" || payload.status === "skipped")) {
+        downloadLink.href = payload.artifact_download_url;
+        downloadLink.hidden = false;
+      } else {
+        downloadLink.hidden = true;
+        downloadLink.removeAttribute("href");
+      }
+    }
+
+    function renderStageBoard(payload) {
+      const board = document.getElementById("stage-board");
+      const logs = payload.logs || [];
+      const stageStatuses = {};
+
+      for (const log of logs) {
+        stageStatuses[log.stage] = log.status || "running";
+      }
+
+      if (payload.status === "failed" && payload.current_stage) {
+        stageStatuses[payload.current_stage] = "failed";
+      }
+      if (payload.status === "skipped" && payload.current_stage) {
+        stageStatuses[payload.current_stage] = "skipped";
+      }
+      if (payload.status === "completed") {
+        stageStatuses["done"] = "completed";
+      }
+
+      board.innerHTML = STAGES.map((stage) => {
+        const status = stageStatuses[stage] || "";
+        const labelMap = {
+          queued: "대기",
+          lock: "락",
+          analysis: "분석",
+          transactions: "실거래",
+          news: "뉴스",
+          contents: "콘텐츠",
+          send: "발송",
+          done: "완료",
+        };
+        return `<div class="stage-pill ${status}">${labelMap[stage]}</div>`;
+      }).join("");
+    }
 
     function buildPayload(form, send) {
       const formData = new FormData(form);
@@ -326,6 +494,7 @@ INDEX_TEMPLATE = """
         return `[${log.time}] [${log.stage}] ${log.message}${extra}`;
       });
       progressEl.textContent = lines.join("\\n");
+      progressEl.scrollTop = progressEl.scrollHeight;
     }
 
     function renderResult(payload) {
@@ -348,6 +517,8 @@ INDEX_TEMPLATE = """
       try {
         const response = await fetch(`/run/status/${runId}`);
         const payload = await response.json();
+        updateRunMeta(payload);
+        renderStageBoard(payload);
         renderProgress(payload);
 
         if (payload.status === "completed" || payload.status === "failed" || payload.status === "skipped") {
@@ -390,6 +561,8 @@ INDEX_TEMPLATE = """
         activePoller = null;
       }
       activeRunId = null;
+      updateRunMeta({ status: "queued", current_stage: "queued", run_id: "-", started_at: "-" });
+      renderStageBoard({ logs: [{ stage: "queued", status: "running" }], status: "queued" });
       progressEl.textContent = "실행 요청을 전송했습니다.";
       resultEl.textContent = "백그라운드 실행을 시작하는 중입니다.";
 
@@ -407,6 +580,13 @@ INDEX_TEMPLATE = """
 
         activeRunId = payload.run_id;
         progressEl.textContent = `[${payload.started_at}] [init] 실행 요청 등록\\nrun_id=${payload.run_id}`;
+        updateRunMeta({
+          status: payload.status,
+          current_stage: "queued",
+          run_id: payload.run_id,
+          started_at: payload.started_at,
+        });
+        renderStageBoard({ logs: [{ stage: "queued", status: "running" }], status: "queued" });
         resultEl.textContent = JSON.stringify(
           {
             run_id: payload.run_id,
@@ -446,6 +626,9 @@ INDEX_TEMPLATE = """
       if (!ok) return;
       submitForm(event.currentTarget, true);
     });
+
+    updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
+    renderStageBoard({});
   </script>
 </body>
 </html>
@@ -494,6 +677,57 @@ def _trim_run_history() -> None:
         RUN_STATE.pop(run_id, None)
 
 
+def _to_relative_name(path: Path) -> str:
+    try:
+        return str(path.relative_to(BASE_DIR))
+    except ValueError:
+        return path.name
+
+
+def _write_json_to_zip(zip_handle: zipfile.ZipFile, arcname: str, payload: dict[str, Any]) -> None:
+    zip_handle.writestr(
+        arcname,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _create_artifact_bundle(run_id: str, state: dict[str, Any], result: dict[str, Any]) -> str | None:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    bundle_path = EXPORT_DIR / f"{run_id}_artifacts.zip"
+    artifact_files = result.get("artifact_files", []) or []
+    existing_paths = [Path(path) for path in artifact_files if Path(path).exists()]
+    written_arcnames: set[str] = set()
+
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        _write_json_to_zip(
+            zf,
+            "run/result.json",
+            result,
+        )
+        _write_json_to_zip(
+            zf,
+            "run/logs.json",
+            {"logs": state.get("logs", [])},
+        )
+
+        for path in existing_paths:
+            if path.is_dir():
+                for file_path in sorted(child for child in path.rglob("*") if child.is_file()):
+                    arcname = _to_relative_name(file_path)
+                    if arcname in written_arcnames:
+                        continue
+                    written_arcnames.add(arcname)
+                    zf.write(file_path, arcname=arcname)
+            elif path.is_file():
+                arcname = _to_relative_name(path)
+                if arcname in written_arcnames:
+                    continue
+                written_arcnames.add(arcname)
+                zf.write(path, arcname=arcname)
+
+    return str(bundle_path)
+
+
 def _append_run_log(run_id: str, event: dict[str, Any]) -> None:
     with RUN_STATE_LOCK:
         state = RUN_STATE.get(run_id)
@@ -532,9 +766,18 @@ def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
         state = RUN_STATE.get(run_id)
         if not state:
             return
+        artifact_bundle_path: str | None = None
+        artifact_bundle_error: str | None = None
+        try:
+            artifact_bundle_path = _create_artifact_bundle(run_id, state, result)
+        except Exception as exc:
+            artifact_bundle_error = str(exc)
         state["status"] = final_status
         state["result"] = result
         state["updated_at"] = result.get("completed_at")
+        state["artifact_bundle_path"] = artifact_bundle_path
+        state["artifact_download_url"] = f"/run/artifacts/{run_id}"
+        state["artifact_bundle_error"] = artifact_bundle_error
 
 
 def _start_background_run(options: dict[str, Any]) -> dict[str, Any]:
@@ -621,6 +864,24 @@ def run_status(run_id: str):
         if not state:
             return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
         return jsonify(state)
+
+
+@app.route("/run/artifacts/<run_id>", methods=["GET"])
+def download_artifacts(run_id: str):
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
+        bundle_path = state.get("artifact_bundle_path")
+
+    if not bundle_path:
+        return jsonify({"success": False, "error": "아직 다운로드 가능한 아티팩트가 없습니다."}), 404
+
+    path = Path(bundle_path)
+    if not path.exists():
+        return jsonify({"success": False, "error": "아티팩트 파일을 찾을 수 없습니다."}), 404
+
+    return send_file(path, as_attachment=True, download_name=path.name)
 
 
 @app.route("/health", methods=["GET"])

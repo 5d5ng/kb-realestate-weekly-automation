@@ -281,6 +281,33 @@ def _summarize_contents(contents: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _collect_artifact_files(analysis: dict[str, Any], contents: dict[str, Any]) -> list[str]:
+    artifact_files: list[str] = []
+
+    source_files = analysis.get("source_files", {}) or {}
+    for value in source_files.values():
+        if isinstance(value, str) and value:
+            artifact_files.append(value)
+
+    for image_path in analysis.get("report_images", []) or []:
+        if isinstance(image_path, str) and image_path:
+            artifact_files.append(image_path)
+
+    prompt_files = contents.get("prompt_files", {}) or {}
+    for value in prompt_files.values():
+        if isinstance(value, str) and value:
+            artifact_files.append(value)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for path in artifact_files:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+    return deduped
+
+
 def run_pipeline(
     *,
     send: bool = True,
@@ -448,6 +475,7 @@ def run_pipeline(
             "transaction_summary": transaction_summary,
             "news_summary": news_summary,
             "contents_summary": contents_summary,
+            "artifact_files": _collect_artifact_files(analysis, contents),
             "send_results": send_results,
         }
         _log(f"파이프라인 종료 | success=True | duration={duration_sec}s")
