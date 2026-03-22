@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,10 +19,6 @@ try:
     import libsql  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency in local env
     libsql = None
-
-_INITIAL_SYNC_DONE = False
-_SYNC_LOCK = threading.Lock()
-
 
 def _env_text(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
@@ -50,12 +45,14 @@ def get_database_backend_snapshot() -> dict[str, Any]:
     turso_active = turso_requested and libsql is not None
     return {
         "backend": "turso" if turso_active else "sqlite",
+        "turso_mode": "remote" if turso_active else None,
         "turso_url_present": bool(url),
         "turso_auth_token_present": bool(token),
         "turso_url_masked": _mask_secret(url),
         "turso_auth_token_masked": _mask_secret(token),
         "libsql_installed": libsql is not None,
-        "embedded_replica_enabled": turso_active,
+        "embedded_replica_enabled": False,
+        "remote_connection_enabled": turso_active,
         "local_db_path": str(DEFAULT_DB_PATH),
     }
 
@@ -72,75 +69,22 @@ def _connect_sqlite(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _remove_local_replica_files(db_path: Path) -> None:
-    for candidate in (
-        db_path,
-        db_path.with_name(f"{db_path.name}-wal"),
-        db_path.with_name(f"{db_path.name}-shm"),
-        db_path.with_name(f"{db_path.name}-journal"),
-        db_path.with_name(f"{db_path.name}-info"),
-    ):
-        try:
-            candidate.unlink()
-        except FileNotFoundError:
-            continue
-
-
-def _is_sqlite_replica_healthy(db_path: Path) -> bool:
-    if not db_path.exists():
-        return False
-    try:
-        conn = sqlite3.connect(db_path)
-        try:
-            row = conn.execute("PRAGMA quick_check").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.DatabaseError:
-        return False
-
-    if not row:
-        return False
-    return str(row[0]).lower() == "ok"
-
-
-def _connect_turso(db_path: Path):
+def _connect_turso() -> Any:
     url = _env_text("TURSO_DATABASE_URL")
     token = _env_text("TURSO_AUTH_TOKEN")
     if libsql is None or not url or not token:
-        return _connect_sqlite(db_path)
+        return _connect_sqlite(DEFAULT_DB_PATH)
 
-    global _INITIAL_SYNC_DONE
-    for attempt in range(2):
-        try:
-            conn = libsql.connect(
-                str(db_path),
-                sync_url=url,
-                auth_token=token,
-                sync_interval=60,
-            )
-            try:
-                conn.row_factory = sqlite3.Row
-            except Exception:
-                pass
-            try:
-                conn.execute("PRAGMA foreign_keys = ON")
-            except Exception:
-                pass
-            if not _INITIAL_SYNC_DONE:
-                with _SYNC_LOCK:
-                    if not _INITIAL_SYNC_DONE:
-                        try:
-                            conn.sync()
-                        except Exception:
-                            pass
-                        _INITIAL_SYNC_DONE = True
-            return conn
-        except Exception:
-            if attempt >= 1:
-                raise
-            _remove_local_replica_files(db_path)
-            _INITIAL_SYNC_DONE = False
-    raise RuntimeError("Turso 연결을 초기화할 수 없습니다.")
+    conn = libsql.connect(url, auth_token=token)
+    try:
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        pass
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+    except Exception:
+        pass
+    return conn
 
 
 @contextmanager
@@ -148,7 +92,7 @@ def db_connection(db_path: Path | None = None) -> Iterator[Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     target_path = db_path or DEFAULT_DB_PATH
     if _using_turso():
-        conn = _connect_turso(target_path)
+        conn = _connect_turso()
     else:
         conn = _connect_sqlite(target_path)
     initial_total_changes = 0
