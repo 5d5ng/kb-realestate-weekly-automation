@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,7 @@ SESSION.headers.update(
         "user-agent": "Mozilla/5.0",
     }
 )
+GENERATION_OVERRIDE_VAR: ContextVar[dict[str, Any]] = ContextVar("generation_override", default={})
 
 
 def _env_text(name: str, default: str | None = None) -> str | None:
@@ -76,8 +79,36 @@ def _provider_key_status(provider: str) -> dict[str, Any]:
     return {"required": False, "present": True, "masked": None}
 
 
-def get_llm_config_snapshot() -> dict[str, Any]:
-    plan = get_generation_plan()
+def _coerce_task_override(task_name: str, override: Any, base: dict[str, Any]) -> dict[str, Any]:
+    if override is None:
+        return base
+    if isinstance(override, bool):
+        if override:
+            return base
+        return {"provider": "none", "model": "", "max_tokens": 0}
+    if isinstance(override, dict):
+        enabled = override.get("enabled")
+        if enabled is False:
+            return {"provider": "none", "model": "", "max_tokens": 0}
+        merged = dict(base)
+        for key in ("provider", "model", "max_tokens"):
+            if key in override and override[key] is not None:
+                merged[key] = override[key]
+        return merged
+    return base
+
+
+@contextmanager
+def generation_override_context(overrides: dict[str, Any] | None):
+    token = GENERATION_OVERRIDE_VAR.set(overrides or {})
+    try:
+        yield
+    finally:
+        GENERATION_OVERRIDE_VAR.reset(token)
+
+
+def get_llm_config_snapshot(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan = get_generation_plan(overrides)
     tasks: dict[str, Any] = {}
     for task_name, config in plan.items():
         provider = config["provider"]
@@ -291,7 +322,7 @@ def build_context(
     return "\n\n".join(sections)
 
 
-def resolve_task_config(task_name: str) -> dict[str, Any]:
+def resolve_task_config(task_name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     default = DEFAULT_TASK_MODELS.get(task_name, {"provider": "none", "model": "", "max_tokens": 0})
     env_prefix = f"REPORTER_{task_name.upper()}"
 
@@ -299,16 +330,18 @@ def resolve_task_config(task_name: str) -> dict[str, Any]:
     model = clean_text(os.getenv(f"{env_prefix}_MODEL", default["model"]))
     max_tokens = int(os.getenv(f"{env_prefix}_MAX_TOKENS", str(default["max_tokens"])))
 
-    return {
+    config = {
         "provider": provider,
         "model": model,
         "max_tokens": max_tokens,
     }
+    active_overrides = overrides if overrides is not None else GENERATION_OVERRIDE_VAR.get({})
+    return _coerce_task_override(task_name, active_overrides.get(task_name), config)
 
 
-def get_generation_plan() -> dict[str, dict[str, Any]]:
+def get_generation_plan(overrides: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     return {
-        task_name: resolve_task_config(task_name)
+        task_name: resolve_task_config(task_name, overrides)
         for task_name in DEFAULT_TASK_MODELS
     }
 

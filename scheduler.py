@@ -335,6 +335,7 @@ def run_pipeline(
     transaction_limit: int = 5,
     refresh_cache: bool | None = None,
     channel_overrides: dict[str, bool] | None = None,
+    llm_overrides: dict[str, bool] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """전체 파이프라인 실행 컨트롤러"""
@@ -363,6 +364,7 @@ def run_pipeline(
         send=send,
         refresh_cache=refresh_cache,
         channel_overrides=channel_overrides or {},
+        llm_overrides=llm_overrides or {},
     )
 
     try:
@@ -491,7 +493,7 @@ def run_pipeline(
 
         current_stage = "contents"
         _emit_progress(progress_callback, stage="contents", message="콘텐츠 생성을 시작합니다.")
-        contents = generate_all_contents(analysis, news, transactions)
+        contents = generate_all_contents(analysis, news, transactions, llm_overrides=llm_overrides)
         contents_summary = _summarize_contents(contents)
         _log(
             "콘텐츠 생성 완료 "
@@ -544,6 +546,7 @@ def run_pipeline(
             "trigger": trigger,
             "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
             "analysis_summary": analysis_summary,
             "cache_refresh_summary": cache_refresh_summary,
             "transaction_summary": transaction_summary,
@@ -588,6 +591,7 @@ def run_pipeline(
             "trigger": trigger,
             "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
             "manual_override": True,
         }
     except PipelineBusyError as exc:
@@ -618,6 +622,7 @@ def run_pipeline(
             "trigger": trigger,
             "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
         }
     except Exception as exc:
         duration_sec = round(time.perf_counter() - started_perf, 2)
@@ -646,6 +651,7 @@ def run_pipeline(
             "trigger": trigger,
             "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
         }
     finally:
         _finish_pipeline_lock(lock_handle, run_context)

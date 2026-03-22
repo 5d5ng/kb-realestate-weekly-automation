@@ -32,6 +32,11 @@ RUN_STATE_LOCK = threading.Lock()
 RUN_STATE: dict[str, dict[str, Any]] = {}
 MAX_RUN_HISTORY = 20
 RUN_SEQUENCE = 0
+WEB_LLM_TASKS = [
+    {"name": "telegram_report", "label": "텔레그램 리포트", "description": "주간 리포트 문안을 LLM으로 다듬습니다."},
+    {"name": "instagram_caption", "label": "인스타 캡션", "description": "인스타 캡션 문안을 LLM으로 생성합니다."},
+    {"name": "card_news_script", "label": "카드뉴스 스크립트", "description": "카드뉴스용 슬라이드 문안을 LLM으로 생성합니다."},
+]
 
 INDEX_TEMPLATE = """
 <!doctype html>
@@ -622,6 +627,43 @@ INDEX_TEMPLATE = """
       color: var(--muted);
       line-height: 1.6;
     }
+    .llm-list, .prompt-actions {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .prompt-actions {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .prompt-button {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: left;
+    }
+    .prompt-button:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+    .prompt-button.active {
+      border-color: var(--primary);
+      background: rgba(33, 133, 124, 0.08);
+      color: var(--primary);
+    }
+    .prompt-empty {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .copy-status {
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 20px;
+    }
     @media (max-width: 980px) {
       .status-grid {
         grid-template-columns: 1fr;
@@ -690,6 +732,23 @@ INDEX_TEMPLATE = """
         <label for="dry-transaction-limit">실거래 건수</label>
         <input id="dry-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
 
+        <label>LLM 사용 플랫폼</label>
+        <div class="llm-list">
+          {% for task in web_llm_tasks %}
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="llm_{{ task.name }}"
+              {% if default_llm_tasks[task.name] %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">{{ task.label }}</span>
+              <span class="channel-desc">{{ task.description }}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+
         <div class="actions">
           <button type="submit">Dry Run 실행</button>
         </div>
@@ -708,6 +767,23 @@ INDEX_TEMPLATE = """
 
         <label for="send-transaction-limit">실거래 건수</label>
         <input id="send-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
+
+        <label>LLM 사용 플랫폼</label>
+        <div class="llm-list">
+          {% for task in web_llm_tasks %}
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="llm_{{ task.name }}"
+              {% if default_llm_tasks[task.name] %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">{{ task.label }}</span>
+              <span class="channel-desc">{{ task.description }}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
 
         <label>발송 플랫폼</label>
         <div class="channel-list">
@@ -820,6 +896,22 @@ INDEX_TEMPLATE = """
       <div class="card">
         <div class="panel-head">
           <div class="panel-copy">
+            <div class="panel-title">LLM 프롬프트</div>
+            <div class="panel-text">실행 중 생성된 프롬프트를 바로 열고 복사할 수 있습니다.</div>
+          </div>
+        </div>
+        <div id="prompt-actions" class="prompt-actions">
+          <div class="prompt-empty">아직 확인할 프롬프트가 없습니다.</div>
+        </div>
+        <div class="actions">
+          <button id="copy-current-prompt" type="button" class="secondary">현재 프롬프트 복사</button>
+        </div>
+        <div id="prompt-copy-status" class="copy-status"></div>
+        <pre id="prompt-viewer" class="json-block">아직 실행된 프롬프트가 없습니다.</pre>
+      </div>
+      <div class="card">
+        <div class="panel-head">
+          <div class="panel-copy">
             <div class="panel-title">기존 실행 다시 보기</div>
             <div class="panel-text">이미 돌고 있는 수동 실행에 다시 붙거나, 최근 실행 기록을 다시 열어 상태를 확인합니다.</div>
           </div>
@@ -843,6 +935,12 @@ INDEX_TEMPLATE = """
     let activePoller = null;
     const ACTIVE_RUN_STORAGE_KEY = "kb_active_run_id";
     const STAGES = ["queued", "lock", "analysis", "cache", "transactions", "news", "contents", "send", "done"];
+    const PROMPT_LABELS = {
+      telegram_report: "텔레그램 리포트",
+      instagram_caption: "인스타 캡션",
+      card_news_script: "카드뉴스 스크립트",
+      naver_blog_post: "네이버 블로그 초안",
+    };
     const STAGE_LABELS = {
       queued: "대기",
       lock: "락",
@@ -854,6 +952,8 @@ INDEX_TEMPLATE = """
       send: "발송",
       done: "완료",
     };
+    let currentPromptTask = null;
+    let currentPromptContent = "";
     const STATUS_COPY = {
       idle: {
         title: "대기 중",
@@ -974,7 +1074,75 @@ INDEX_TEMPLATE = """
         data.send_instagram = form.querySelector('input[name="send_instagram"]')?.checked || false;
       }
 
+      data.llm_telegram_report = form.querySelector('input[name="llm_telegram_report"]')?.checked || false;
+      data.llm_instagram_caption = form.querySelector('input[name="llm_instagram_caption"]')?.checked || false;
+      data.llm_card_news_script = form.querySelector('input[name="llm_card_news_script"]')?.checked || false;
+
       return data;
+    }
+
+    function resetPromptPanel() {
+      currentPromptTask = null;
+      currentPromptContent = "";
+      document.getElementById("prompt-actions").innerHTML = '<div class="prompt-empty">아직 확인할 프롬프트가 없습니다.</div>';
+      document.getElementById("prompt-viewer").textContent = "아직 실행된 프롬프트가 없습니다.";
+      document.getElementById("prompt-copy-status").textContent = "";
+    }
+
+    async function loadPrompt(runId, taskName, { copy = false } = {}) {
+      const viewerEl = document.getElementById("prompt-viewer");
+      const statusEl = document.getElementById("prompt-copy-status");
+      viewerEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 프롬프트를 불러오는 중입니다.`;
+      statusEl.textContent = "";
+      try {
+        const response = await fetch(`/run/prompt/${runId}/${taskName}`);
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          viewerEl.textContent = JSON.stringify(payload, null, 2);
+          return;
+        }
+        currentPromptTask = taskName;
+        currentPromptContent = payload.content || "";
+        viewerEl.textContent = currentPromptContent || "프롬프트 내용이 비어 있습니다.";
+        document.querySelectorAll(".prompt-button").forEach((button) => {
+          button.classList.toggle("active", button.getAttribute("data-task-name") === taskName);
+        });
+        if (copy && currentPromptContent) {
+          await navigator.clipboard.writeText(currentPromptContent);
+          statusEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 프롬프트를 복사했습니다.`;
+        }
+      } catch (error) {
+        viewerEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
+      }
+    }
+
+    function renderPromptPanel(payload) {
+      const actionsEl = document.getElementById("prompt-actions");
+      const promptFiles = payload?.result?.prompt_files || {};
+      const runId = payload?.run_id;
+      const entries = Object.entries(promptFiles);
+      if (!runId || !entries.length) {
+        resetPromptPanel();
+        return;
+      }
+
+      actionsEl.innerHTML = entries.map(([taskName, _path]) => `
+        <button type="button" class="prompt-button" data-task-name="${taskName}">
+          ${PROMPT_LABELS[taskName] || taskName}
+        </button>
+      `).join("");
+
+      actionsEl.querySelectorAll(".prompt-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const taskName = button.getAttribute("data-task-name");
+          loadPrompt(runId, taskName || "", { copy: true });
+        });
+      });
+
+      const firstTaskName = entries[0][0];
+      if (currentPromptTask !== firstTaskName) {
+        loadPrompt(runId, firstTaskName);
+      }
     }
 
     function renderProgress(payload) {
@@ -1008,8 +1176,10 @@ INDEX_TEMPLATE = """
       const resultEl = document.getElementById("result");
       if (payload.result) {
         resultEl.textContent = JSON.stringify(payload.result, null, 2);
+        renderPromptPanel(payload);
         return;
       }
+      resetPromptPanel();
       if (payload.error) {
         resultEl.textContent = JSON.stringify(payload.error, null, 2);
         return;
@@ -1027,6 +1197,7 @@ INDEX_TEMPLATE = """
       localStorage.setItem(ACTIVE_RUN_STORAGE_KEY, runId);
 
       if (announce) {
+        resetPromptPanel();
         document.getElementById("result").textContent = JSON.stringify(
           {
             run_id: runId,
@@ -1162,6 +1333,7 @@ INDEX_TEMPLATE = """
       renderStageBoard({ logs: [{ stage: "queued", status: "running" }], status: "queued" });
       progressEl.innerHTML = '<div class="log-entry running"><div class="log-top"><div class="log-stage">대기</div><div class="log-time">-</div></div><div class="log-message">실행 요청을 전송했습니다.</div></div>';
       resultEl.textContent = "백그라운드 실행을 시작하는 중입니다.";
+      resetPromptPanel();
 
       try {
         const response = await fetch("/run/start", {
@@ -1266,9 +1438,19 @@ INDEX_TEMPLATE = """
     document.getElementById("refresh-runs-button").addEventListener("click", loadRecentRuns);
     document.getElementById("preflight-button").addEventListener("click", runPreflight);
     document.getElementById("telegram-test-button").addEventListener("click", runTelegramTest);
+    document.getElementById("copy-current-prompt").addEventListener("click", async function () {
+      const statusEl = document.getElementById("prompt-copy-status");
+      if (!currentPromptContent) {
+        statusEl.textContent = "복사할 프롬프트가 아직 없습니다.";
+        return;
+      }
+      await navigator.clipboard.writeText(currentPromptContent);
+      statusEl.textContent = `${PROMPT_LABELS[currentPromptTask] || currentPromptTask || "현재"} 프롬프트를 복사했습니다.`;
+    });
 
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
+    resetPromptPanel();
     loadRecentRuns();
 
     const savedRunId = localStorage.getItem(ACTIVE_RUN_STORAGE_KEY);
@@ -1307,12 +1489,18 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sms": _parse_bool(payload.get("send_sms"), default=False),
         "instagram": _parse_bool(payload.get("send_instagram"), default=False),
     }
+    llm_overrides = {
+        "telegram_report": _parse_bool(payload.get("llm_telegram_report"), default=True),
+        "instagram_caption": _parse_bool(payload.get("llm_instagram_caption"), default=True),
+        "card_news_script": _parse_bool(payload.get("llm_card_news_script"), default=True),
+    }
     return {
         "send": send,
         "news_days": news_days,
         "news_max_articles": news_max_articles,
         "transaction_limit": transaction_limit,
         "channel_overrides": channel_overrides if send else None,
+        "llm_overrides": llm_overrides,
     }
 
 
@@ -1402,6 +1590,7 @@ def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
         news_max_articles=options["news_max_articles"],
         transaction_limit=options["transaction_limit"],
         channel_overrides=options["channel_overrides"],
+        llm_overrides=options.get("llm_overrides"),
         progress_callback=progress_callback,
     )
 
@@ -1450,6 +1639,7 @@ def _start_background_run(options: dict[str, Any]) -> dict[str, Any]:
                     "extra": {
                         "send": options["send"],
                         "channel_overrides": options.get("channel_overrides") or {},
+                        "llm_overrides": options.get("llm_overrides") or {},
                     },
                 }
             ],
@@ -1476,6 +1666,12 @@ def index():
             "sms": SEND_SMS_ENABLED,
             "instagram": SEND_INSTAGRAM_ENABLED,
         },
+        web_llm_tasks=WEB_LLM_TASKS,
+        default_llm_tasks={
+            task["name"]: (get_generation_plan().get(task["name"], {}).get("provider") != "none")
+            and int(get_generation_plan().get(task["name"], {}).get("max_tokens", 0)) > 0
+            for task in WEB_LLM_TASKS
+        },
     )
 
 
@@ -1492,6 +1688,7 @@ def run_manual():
         news_max_articles=options["news_max_articles"],
         transaction_limit=options["transaction_limit"],
         channel_overrides=options["channel_overrides"],
+        llm_overrides=options.get("llm_overrides"),
     )
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
@@ -1540,6 +1737,34 @@ def run_recent():
             )
 
     return jsonify({"success": True, "runs": runs})
+
+
+@app.route("/run/prompt/<run_id>/<task_name>", methods=["GET"])
+def run_prompt(run_id: str, task_name: str):
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
+        result = state.get("result") or {}
+        prompt_files = result.get("prompt_files") or {}
+        prompt_path = prompt_files.get(task_name)
+
+    if not prompt_path:
+        return jsonify({"success": False, "error": "해당 실행에서 생성된 프롬프트를 찾을 수 없습니다."}), 404
+
+    path = Path(prompt_path)
+    if not path.exists():
+        return jsonify({"success": False, "error": "프롬프트 파일을 찾을 수 없습니다."}), 404
+
+    return jsonify(
+        {
+            "success": True,
+            "run_id": run_id,
+            "task_name": task_name,
+            "path": str(path),
+            "content": path.read_text(encoding="utf-8"),
+        }
+    )
 
 
 @app.route("/config/status", methods=["GET"])

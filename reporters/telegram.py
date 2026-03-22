@@ -3,7 +3,6 @@ from __future__ import annotations
 from .common import (
     BUCKET_LABELS,
     build_context,
-    clean_text,
     format_news_item,
     format_region_bucket,
     format_trade_item,
@@ -92,12 +91,11 @@ def fallback_telegram_report(analysis: dict, news: list[dict], transactions: dic
     return "\n".join(lines)
 
 
-def generate_telegram_report(
+def build_telegram_report_prompt(
     analysis: dict,
     news: list[dict],
     transactions: dict | None = None,
-) -> str:
-    fallback = fallback_telegram_report(analysis, news, transactions)
+) -> tuple[str, str]:
     prompt = (
         "아래 데이터를 기반으로 텔레그램용 한국어 주간 부동산 리포트를 작성해줘.\n"
         "- 문체는 전문적이되 이해하기 쉽게\n"
@@ -108,4 +106,14 @@ def generate_telegram_report(
         f"{build_context(analysis, news, transactions)}"
     )
     system = "너는 한국 부동산 시장 콘텐츠 에디터다. 없는 수치나 사실을 만들지 말고 제공된 데이터만 사용해라."
+    return system, prompt
+
+
+def generate_telegram_report(
+    analysis: dict,
+    news: list[dict],
+    transactions: dict | None = None,
+) -> str:
+    fallback = fallback_telegram_report(analysis, news, transactions)
+    system, prompt = build_telegram_report_prompt(analysis, news, transactions)
     return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
