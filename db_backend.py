@@ -66,10 +66,41 @@ def _using_turso() -> bool:
 
 
 def _connect_sqlite(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _remove_local_replica_files(db_path: Path) -> None:
+    for candidate in (
+        db_path,
+        db_path.with_name(f"{db_path.name}-wal"),
+        db_path.with_name(f"{db_path.name}-shm"),
+        db_path.with_name(f"{db_path.name}-journal"),
+        db_path.with_name(f"{db_path.name}-info"),
+    ):
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            continue
+
+
+def _is_sqlite_replica_healthy(db_path: Path) -> bool:
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return False
+
+    if not row:
+        return False
+    return str(row[0]).lower() == "ok"
 
 
 def _connect_turso(db_path: Path):
@@ -78,41 +109,55 @@ def _connect_turso(db_path: Path):
     if libsql is None or not url or not token:
         return _connect_sqlite(db_path)
 
-    conn = libsql.connect(str(db_path), sync_url=url, auth_token=token)
-    try:
-        conn.row_factory = sqlite3.Row
-    except Exception:
-        pass
-    try:
-        conn.execute("PRAGMA foreign_keys = ON")
-    except Exception:
-        pass
-
     global _INITIAL_SYNC_DONE
-    if not _INITIAL_SYNC_DONE:
-        with _SYNC_LOCK:
+    for attempt in range(2):
+        try:
+            conn = libsql.connect(
+                str(db_path),
+                sync_url=url,
+                auth_token=token,
+                sync_interval=60,
+            )
+            try:
+                conn.row_factory = sqlite3.Row
+            except Exception:
+                pass
+            try:
+                conn.execute("PRAGMA foreign_keys = ON")
+            except Exception:
+                pass
             if not _INITIAL_SYNC_DONE:
-                try:
-                    conn.sync()
-                except Exception:
-                    pass
-                _INITIAL_SYNC_DONE = True
-    return conn
+                with _SYNC_LOCK:
+                    if not _INITIAL_SYNC_DONE:
+                        try:
+                            conn.sync()
+                        except Exception:
+                            pass
+                        _INITIAL_SYNC_DONE = True
+            return conn
+        except Exception:
+            if attempt >= 1:
+                raise
+            _remove_local_replica_files(db_path)
+            _INITIAL_SYNC_DONE = False
+    raise RuntimeError("Turso 연결을 초기화할 수 없습니다.")
 
 
 @contextmanager
 def db_connection(db_path: Path | None = None) -> Iterator[Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     target_path = db_path or DEFAULT_DB_PATH
-    conn = _connect_turso(target_path) if _using_turso() else _connect_sqlite(target_path)
+    if _using_turso():
+        conn = _connect_turso(target_path)
+    else:
+        conn = _connect_sqlite(target_path)
+    initial_total_changes = 0
+    try:
+        initial_total_changes = int(getattr(conn, "total_changes", 0) or 0)
+    except Exception:
+        initial_total_changes = 0
     try:
         yield conn
         conn.commit()
-        if _using_turso():
-            try:
-                conn.sync()
-            except Exception:
-                pass
     finally:
         conn.close()
-

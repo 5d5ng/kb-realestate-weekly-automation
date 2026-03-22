@@ -8,7 +8,9 @@ KB부동산 실거래가 연동
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import threading
 import time
 from datetime import date
 from functools import lru_cache
@@ -27,6 +29,7 @@ REGION_RETRY_COUNT = 2
 REGION_RETRY_DELAY_SEC = 2.0
 COMPLEX_CACHE_MAX_AGE_HOURS = 24 * 7
 REALTRADE_CACHE_TTL_SEC = 60 * 60 * 24
+MAX_REGION_WORKERS = 6
 CONTENT_REGION_BUCKETS = (
     "capital_sale_top5",
     "capital_sale_bottom5",
@@ -96,8 +99,16 @@ KB_SIDO_ALIASES = {
     "제주특별자치도": "제주도",
 }
 
-SESSION = requests.Session()
-SESSION.headers.update(COMMON_HEADERS)
+_SESSION_LOCAL = threading.local()
+
+
+def _get_session() -> requests.Session:
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(COMMON_HEADERS)
+        _SESSION_LOCAL.session = session
+    return session
 
 
 def _clean_text(value: Any) -> str:
@@ -141,7 +152,7 @@ def _request_json(base_url: str, path: str, params: dict[str, Any] | None = None
 
     for attempt in range(1, REQUEST_RETRY_COUNT + 1):
         try:
-            response = SESSION.get(f"{base_url}{path}", params=params, timeout=TIMEOUT_SEC)
+            response = _get_session().get(f"{base_url}{path}", params=params, timeout=TIMEOUT_SEC)
             response.raise_for_status()
 
             payload = response.json()
@@ -888,13 +899,14 @@ def _collect_region_transactions(
                 continue
 
             complex_name = _clean_text(complex_info.get("단지명"))
+            try:
+                type_rows = _get_complex_types(complex_id)
+            except RuntimeError:
+                continue
 
             for area_type in area_types:
                 area_key = str(area_type)
-                try:
-                    area_id, area_profile = _pick_area_type(complex_id, area_type)
-                except RuntimeError:
-                    continue
+                area_id, area_profile = _pick_area_type_from_types(type_rows, area_type)
                 if not area_id:
                     continue
 
@@ -1083,18 +1095,43 @@ def get_recent_transactions(
       }
     }
     """
+    def _build_region_cache(region_names: list[str]) -> dict[str, dict[str, Any]]:
+        if not region_names:
+            return {}
+
+        unique_region_names = list(dict.fromkeys(region_names))
+        max_workers = min(MAX_REGION_WORKERS, len(unique_region_names))
+        if max_workers <= 1:
+            return {
+                region_name: _collect_region_transactions(region_name, area_types, limit)
+                for region_name in unique_region_names
+            }
+
+        region_cache: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(_collect_region_transactions, region_name, area_types, limit): region_name
+                for region_name in unique_region_names
+            }
+            for future in as_completed(future_map):
+                region_name = future_map[future]
+                region_cache[region_name] = future.result()
+        return region_cache
+
     grouped_region_names = _extract_grouped_region_names(regions)
     if grouped_region_names is not None:
-        region_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        region_cache = _build_region_cache([
+            region_name
+            for bucket_region_names in grouped_region_names.values()
+            for region_name in bucket_region_names
+        ])
         grouped_results: dict[str, dict[str, dict[str, list[dict[str, Any]]]]] = {}
 
         for bucket_name, bucket_region_names in grouped_region_names.items():
             grouped_results[bucket_name] = {}
             for region_name in bucket_region_names:
-                if region_name not in region_cache:
-                    region_cache[region_name] = _collect_region_transactions(region_name, area_types, limit)
                 grouped_results[bucket_name][region_name] = region_cache[region_name]
         return grouped_results
 
     region_names = _extract_region_names(regions)
-    return {region_name: _collect_region_transactions(region_name, area_types, limit) for region_name in region_names}
+    return _build_region_cache(region_names)
