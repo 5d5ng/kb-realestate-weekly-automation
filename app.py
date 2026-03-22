@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from flask import Flask, jsonify, render_template_string, request, send_file
 
+from db_backend import get_database_backend_snapshot
 from news import get_news_config_snapshot
 from reporters.common import get_generation_plan, get_llm_config_snapshot
 from scheduler import init_scheduler, run_pipeline
@@ -58,7 +59,7 @@ INDEX_TEMPLATE = """
       color: var(--ink);
     }
     .wrap {
-      max-width: 920px;
+      max-width: 1280px;
       margin: 0 auto;
       padding: 32px 20px 48px;
     }
@@ -220,29 +221,107 @@ INDEX_TEMPLATE = """
       border-radius: 6px;
     }
     pre {
-      margin-top: 22px;
+      margin: 0;
       padding: 18px;
       border-radius: 18px;
       background: #111827;
       color: #f9fafb;
       overflow: auto;
-      min-height: 220px;
       line-height: 1.5;
       font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     .status-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
       gap: 18px;
       margin-top: 22px;
+      align-items: start;
+    }
+    .status-overview {
+      grid-column: 1 / -1;
     }
     .status-card {
       display: grid;
       gap: 12px;
     }
+    .status-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .status-banner.idle {
+      background: #f8fafc;
+      border-color: #cbd5e1;
+    }
+    .status-banner.queued,
+    .status-banner.running {
+      background: #ecfeff;
+      border-color: #99f6e4;
+    }
+    .status-banner.completed {
+      background: #dcfce7;
+      border-color: #86efac;
+    }
+    .status-banner.failed {
+      background: #fee2e2;
+      border-color: #fca5a5;
+    }
+    .status-banner.skipped {
+      background: #ffedd5;
+      border-color: #fdba74;
+    }
+    .status-copy {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .status-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .status-subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 96px;
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.12);
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .status-banner.completed .status-badge {
+      background: rgba(22, 101, 52, 0.12);
+      color: #166534;
+    }
+    .status-banner.failed .status-badge {
+      background: rgba(153, 27, 27, 0.12);
+      color: #991b1b;
+    }
+    .status-banner.skipped .status-badge {
+      background: rgba(154, 52, 18, 0.12);
+      color: #9a3412;
+    }
     .meta-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 10px;
     }
     .meta-item {
@@ -264,18 +343,30 @@ INDEX_TEMPLATE = """
     }
     .stage-board {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
       gap: 10px;
       margin-top: 12px;
     }
     .stage-pill {
-      padding: 12px 14px;
+      display: grid;
+      gap: 8px;
+      padding: 14px 14px;
       border-radius: 14px;
       border: 1px solid var(--line);
       background: #fff;
       color: var(--muted);
       font-size: 13px;
       font-weight: 700;
+      min-height: 86px;
+    }
+    .stage-name {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .stage-meta {
+      font-size: 12px;
+      color: var(--muted);
     }
     .stage-pill.running {
       border-color: var(--accent);
@@ -324,6 +415,115 @@ INDEX_TEMPLATE = """
     .preflight-card {
       margin-top: 22px;
     }
+    .json-block {
+      min-height: 240px;
+    }
+    .log-list {
+      display: grid;
+      gap: 10px;
+      max-height: 760px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .log-entry,
+    .log-empty {
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .log-empty {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .log-entry.running {
+      border-color: #99f6e4;
+      background: #f0fdfa;
+    }
+    .log-entry.completed {
+      border-color: #86efac;
+      background: #f0fdf4;
+    }
+    .log-entry.failed {
+      border-color: #fca5a5;
+      background: #fef2f2;
+    }
+    .log-entry.skipped {
+      border-color: #fdba74;
+      background: #fff7ed;
+    }
+    .log-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .log-stage {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .log-time {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .log-message {
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--ink);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .log-extra {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(17, 24, 39, 0.06);
+      color: #334155;
+      font-family: "SFMono-Regular", "Menlo", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .panel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .panel-copy {
+      display: grid;
+      gap: 6px;
+    }
+    .panel-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .panel-text {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    @media (max-width: 980px) {
+      .status-grid {
+        grid-template-columns: 1fr;
+      }
+      .status-overview {
+        grid-column: auto;
+      }
+    }
   </style>
 </head>
 <body>
@@ -366,7 +566,7 @@ INDEX_TEMPLATE = """
         <button id="preflight-button" type="button" class="secondary">사전 점검 실행</button>
         <button id="telegram-test-button" type="button">텔레그램 단독 테스트</button>
       </div>
-      <pre id="preflight-result">아직 사전 점검 결과가 없습니다.</pre>
+      <pre id="preflight-result" class="json-block">아직 사전 점검 결과가 없습니다.</pre>
     </section>
 
     <section class="grid">
@@ -454,9 +654,20 @@ INDEX_TEMPLATE = """
     </p>
 
     <section class="status-grid">
-      <div class="card status-card">
-        <h2>실행 상태</h2>
-        <p>현재 실행 ID, 상태, 단계, 생성 파일 다운로드를 여기서 바로 확인합니다.</p>
+      <div class="card status-card status-overview">
+        <div class="panel-head">
+          <div class="panel-copy">
+            <div class="panel-title">실행 상태</div>
+            <div class="panel-text">현재 실행 단계, 전체 진행 상황, 생성 파일 다운로드를 한눈에 확인합니다.</div>
+          </div>
+        </div>
+        <div id="status-banner" class="status-banner idle">
+          <div class="status-copy">
+            <div class="status-title" id="status-title">대기 중</div>
+            <div class="status-subtitle" id="status-subtitle">아직 실행된 작업이 없습니다. Dry Run 또는 실제 발송을 시작해 주세요.</div>
+          </div>
+          <div class="status-badge" id="status-badge">대기</div>
+        </div>
         <div class="meta-grid">
           <div class="meta-item">
             <span class="meta-label">상태</span>
@@ -481,14 +692,24 @@ INDEX_TEMPLATE = """
         </div>
       </div>
       <div class="card">
-        <h2>진행 로그</h2>
-        <p>현재 어떤 단계가 실행 중인지 순서대로 표시합니다.</p>
-        <pre id="progress">아직 실행 로그가 없습니다.</pre>
+        <div class="panel-head">
+          <div class="panel-copy">
+            <div class="panel-title">진행 로그</div>
+            <div class="panel-text">가장 최근 로그까지 줄바꿈된 카드 형태로 표시합니다.</div>
+          </div>
+        </div>
+        <div id="progress" class="log-list">
+          <div class="log-empty">아직 실행 로그가 없습니다.</div>
+        </div>
       </div>
       <div class="card">
-        <h2>최종 결과</h2>
-        <p>실행이 끝나면 최종 응답 JSON 이 여기에 표시됩니다.</p>
-        <pre id="result">아직 실행 결과가 없습니다.</pre>
+        <div class="panel-head">
+          <div class="panel-copy">
+            <div class="panel-title">최종 결과</div>
+            <div class="panel-text">실행이 끝나면 최종 응답 JSON을 보기 좋게 줄바꿈해서 보여줍니다.</div>
+          </div>
+        </div>
+        <pre id="result" class="json-block">아직 실행 결과가 없습니다.</pre>
       </div>
     </section>
   </div>
@@ -496,13 +717,79 @@ INDEX_TEMPLATE = """
   <script>
     let activeRunId = null;
     let activePoller = null;
-    const STAGES = ["queued", "lock", "analysis", "transactions", "news", "contents", "send", "done"];
+    const STAGES = ["queued", "lock", "analysis", "cache", "transactions", "news", "contents", "send", "done"];
+    const STAGE_LABELS = {
+      queued: "대기",
+      lock: "락",
+      analysis: "분석",
+      cache: "캐시 갱신",
+      transactions: "실거래",
+      news: "뉴스",
+      contents: "콘텐츠",
+      send: "발송",
+      done: "완료",
+    };
+    const STATUS_COPY = {
+      idle: {
+        title: "대기 중",
+        subtitle: "아직 실행된 작업이 없습니다. Dry Run 또는 실제 발송을 시작해 주세요.",
+        badge: "대기",
+      },
+      queued: {
+        title: "실행 대기",
+        subtitle: "요청은 등록됐고, 백그라운드 작업을 시작할 준비를 하고 있습니다.",
+        badge: "대기",
+      },
+      running: {
+        title: "실행 중",
+        subtitle: "현재 선택한 단계들을 순서대로 처리하고 있습니다.",
+        badge: "진행 중",
+      },
+      completed: {
+        title: "실행 완료",
+        subtitle: "전체 작업이 끝났습니다. 결과와 생성 파일을 바로 확인할 수 있습니다.",
+        badge: "완료",
+      },
+      failed: {
+        title: "실행 실패",
+        subtitle: "중간 단계에서 오류가 발생했습니다. 아래 로그와 결과를 먼저 확인해 주세요.",
+        badge: "실패",
+      },
+      skipped: {
+        title: "실행 스킵",
+        subtitle: "우선순위나 락 조건 때문에 이번 실행은 건너뛰었습니다.",
+        badge: "스킵",
+      },
+    };
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
 
     function updateRunMeta(payload) {
-      document.getElementById("run-status").textContent = payload.status || "대기";
-      document.getElementById("run-stage").textContent = payload.current_stage || "-";
+      const status = payload.status || "idle";
+      const currentStage = payload.current_stage || "-";
+      document.getElementById("run-status").textContent = status === "idle" ? "대기" : status;
+      document.getElementById("run-stage").textContent = currentStage === "-" ? "-" : (STAGE_LABELS[currentStage] || currentStage);
       document.getElementById("run-id").textContent = payload.run_id || "-";
       document.getElementById("run-started-at").textContent = payload.started_at || "-";
+
+      const banner = document.getElementById("status-banner");
+      const title = document.getElementById("status-title");
+      const subtitle = document.getElementById("status-subtitle");
+      const badge = document.getElementById("status-badge");
+      const copy = STATUS_COPY[status] || STATUS_COPY.idle;
+      banner.className = `status-banner ${status}`;
+      title.textContent = copy.title;
+      subtitle.textContent = currentStage && currentStage !== "-" && STAGE_LABELS[currentStage]
+        ? `${copy.subtitle} 현재 단계: ${STAGE_LABELS[currentStage]}`
+        : copy.subtitle;
+      badge.textContent = copy.badge;
 
       const downloadLink = document.getElementById("download-artifacts");
       if (payload.artifact_download_url && (payload.status === "completed" || payload.status === "failed" || payload.status === "skipped")) {
@@ -535,17 +822,19 @@ INDEX_TEMPLATE = """
 
       board.innerHTML = STAGES.map((stage) => {
         const status = stageStatuses[stage] || "";
-        const labelMap = {
-          queued: "대기",
-          lock: "락",
-          analysis: "분석",
-          transactions: "실거래",
-          news: "뉴스",
-          contents: "콘텐츠",
-          send: "발송",
-          done: "완료",
+        const metaMap = {
+          completed: "완료됨",
+          running: "진행 중",
+          failed: "오류 발생",
+          skipped: "건너뜀",
         };
-        return `<div class="stage-pill ${status}">${labelMap[stage]}</div>`;
+        const meta = metaMap[status] || "대기";
+        return `
+          <div class="stage-pill ${status}">
+            <div class="stage-name">${STAGE_LABELS[stage]}</div>
+            <div class="stage-meta">${meta}</div>
+          </div>
+        `;
       }).join("");
     }
 
@@ -567,15 +856,26 @@ INDEX_TEMPLATE = """
       const progressEl = document.getElementById("progress");
       const logs = payload.logs || [];
       if (!logs.length) {
-        progressEl.textContent = "아직 실행 로그가 없습니다.";
+        progressEl.innerHTML = '<div class="log-empty">아직 실행 로그가 없습니다.</div>';
         return;
       }
 
-      const lines = logs.map((log) => {
-        const extra = log.extra ? ` | ${JSON.stringify(log.extra)}` : "";
-        return `[${log.time}] [${log.stage}] ${log.message}${extra}`;
-      });
-      progressEl.textContent = lines.join("\\n");
+      progressEl.innerHTML = logs.map((log) => {
+        const status = log.status || "running";
+        const extra = log.extra
+          ? `<div class="log-extra">${escapeHtml(JSON.stringify(log.extra, null, 2))}</div>`
+          : "";
+        return `
+          <div class="log-entry ${status}">
+            <div class="log-top">
+              <div class="log-stage">${escapeHtml(STAGE_LABELS[log.stage] || log.stage)}</div>
+              <div class="log-time">${escapeHtml(log.time || "-")}</div>
+            </div>
+            <div class="log-message">${escapeHtml(log.message || "")}</div>
+            ${extra}
+          </div>
+        `;
+      }).join("");
       progressEl.scrollTop = progressEl.scrollHeight;
     }
 
@@ -645,7 +945,7 @@ INDEX_TEMPLATE = """
       activeRunId = null;
       updateRunMeta({ status: "queued", current_stage: "queued", run_id: "-", started_at: "-" });
       renderStageBoard({ logs: [{ stage: "queued", status: "running" }], status: "queued" });
-      progressEl.textContent = "실행 요청을 전송했습니다.";
+      progressEl.innerHTML = '<div class="log-entry running"><div class="log-top"><div class="log-stage">대기</div><div class="log-time">-</div></div><div class="log-message">실행 요청을 전송했습니다.</div></div>';
       resultEl.textContent = "백그라운드 실행을 시작하는 중입니다.";
 
       try {
@@ -661,7 +961,15 @@ INDEX_TEMPLATE = """
         }
 
         activeRunId = payload.run_id;
-        progressEl.textContent = `[${payload.started_at}] [init] 실행 요청 등록\\nrun_id=${payload.run_id}`;
+        progressEl.innerHTML = `
+          <div class="log-entry running">
+            <div class="log-top">
+              <div class="log-stage">대기</div>
+              <div class="log-time">${escapeHtml(payload.started_at || "-")}</div>
+            </div>
+            <div class="log-message">실행 요청이 등록되었습니다. run_id=${escapeHtml(payload.run_id || "-")}</div>
+          </div>
+        `;
         updateRunMeta({
           status: payload.status,
           current_stage: "queued",
@@ -985,6 +1293,7 @@ def config_status():
     return jsonify(
         {
             "success": True,
+            "database": get_database_backend_snapshot(),
             "news": get_news_config_snapshot(),
             "llm": get_llm_config_snapshot(),
             "generation_plan": get_generation_plan(),

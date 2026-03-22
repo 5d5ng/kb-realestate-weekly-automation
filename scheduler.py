@@ -281,6 +281,24 @@ def _summarize_contents(contents: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _summarize_cache_refresh(summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        "bucket_count": int(summary.get("bucket_count") or 0),
+        "region_count": int(summary.get("region_count") or 0),
+        "unique_region_count": int(summary.get("unique_region_count") or 0),
+        "unique_complex_count": int(summary.get("unique_complex_count") or 0),
+        "unique_area_pair_count": int(summary.get("unique_area_pair_count") or 0),
+        "sale_cache_entry_count": int(summary.get("sale_cache_entry_count") or 0),
+        "rent_cache_entry_count": int(summary.get("rent_cache_entry_count") or 0),
+        "failed_region_count": len(summary.get("failed_regions") or []),
+        "bucket_regions": summary.get("bucket_regions") or {},
+        "skipped": bool(summary.get("skipped")),
+        "detail": summary.get("detail", ""),
+    }
+
+
 def _collect_artifact_files(analysis: dict[str, Any], contents: dict[str, Any]) -> list[str]:
     artifact_files: list[str] = []
 
@@ -315,13 +333,14 @@ def run_pipeline(
     news_days: int = 7,
     news_max_articles: int = 12,
     transaction_limit: int = 5,
+    refresh_cache: bool | None = None,
     channel_overrides: dict[str, bool] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """전체 파이프라인 실행 컨트롤러"""
     from analyzer import run_analysis
     from news import get_weekly_news
-    from realestate import get_recent_transactions
+    from realestate import get_recent_transactions, refresh_transaction_cache
     from reporter import generate_all_contents
     from sender import send_all
 
@@ -331,6 +350,9 @@ def run_pipeline(
     lock_handle = None
     run_context: dict[str, Any] | None = None
 
+    if refresh_cache is None:
+        refresh_cache = trigger == "scheduled"
+
     _log(f"파이프라인 시작 | trigger={trigger} | send={send}")
     _emit_progress(
         progress_callback,
@@ -339,6 +361,7 @@ def run_pipeline(
         status="running",
         trigger=trigger,
         send=send,
+        refresh_cache=refresh_cache,
         channel_overrides=channel_overrides or {},
     )
 
@@ -370,6 +393,55 @@ def run_pipeline(
             latest_date=analysis_summary["latest_date"],
             content_buckets=analysis_summary["content_buckets"],
         )
+        _check_for_manual_override(run_context, current_stage)
+
+        current_stage = "cache"
+        if refresh_cache:
+            _emit_progress(
+                progress_callback,
+                stage="cache",
+                message="선별 지역 캐시 갱신을 시작합니다.",
+                transaction_limit=transaction_limit,
+                refresh_rent=False,
+            )
+            cache_refresh_summary = refresh_transaction_cache(
+                analysis,
+                limit=transaction_limit,
+                refresh_rent=False,
+                progress_callback=lambda event: _emit_progress(
+                    progress_callback,
+                    stage="cache",
+                    message=event.get("message", "캐시를 갱신하고 있습니다."),
+                    status=event.get("status", "running"),
+                    **{key: value for key, value in event.items() if key not in {"message", "status"}},
+                ),
+            )
+            cache_refresh_summary = _summarize_cache_refresh(cache_refresh_summary)
+            _log(
+                "캐시 갱신 완료 "
+                f"| regions={cache_refresh_summary['unique_region_count']} "
+                f"| complexes={cache_refresh_summary['unique_complex_count']} "
+                f"| sale_entries={cache_refresh_summary['sale_cache_entry_count']}"
+            )
+            _emit_progress(
+                progress_callback,
+                stage="cache",
+                message="선별 지역 캐시 갱신이 완료되었습니다.",
+                status="completed",
+                cache_refresh_summary=cache_refresh_summary,
+            )
+        else:
+            cache_refresh_summary = {
+                "skipped": True,
+                "detail": "수동 실행은 캐시 갱신을 생략하고 DB 우선으로 진행합니다.",
+            }
+            _log("수동 실행으로 캐시 갱신 생략")
+            _emit_progress(
+                progress_callback,
+                stage="cache",
+                message="수동 실행은 캐시 갱신을 생략하고 DB 우선으로 진행합니다.",
+                status="skipped",
+            )
         _check_for_manual_override(run_context, current_stage)
 
         current_stage = "transactions"
@@ -470,8 +542,10 @@ def run_pipeline(
             "duration_sec": duration_sec,
             "send_enabled": send,
             "trigger": trigger,
+            "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
             "analysis_summary": analysis_summary,
+            "cache_refresh_summary": cache_refresh_summary,
             "transaction_summary": transaction_summary,
             "news_summary": news_summary,
             "contents_summary": contents_summary,
@@ -512,6 +586,7 @@ def run_pipeline(
             "reason": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
             "manual_override": True,
         }
@@ -541,6 +616,7 @@ def run_pipeline(
             "reason": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
         }
     except Exception as exc:
@@ -568,6 +644,7 @@ def run_pipeline(
             "error": str(exc),
             "send_enabled": send,
             "trigger": trigger,
+            "refresh_cache": refresh_cache,
             "channel_overrides": channel_overrides or {},
         }
     finally:
