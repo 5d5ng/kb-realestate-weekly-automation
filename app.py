@@ -14,7 +14,13 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 from news import get_news_config_snapshot
 from reporters.common import get_generation_plan, get_llm_config_snapshot
 from scheduler import init_scheduler, run_pipeline
-from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED, get_delivery_config_snapshot
+from sender import (
+    SEND_INSTAGRAM_ENABLED,
+    SEND_SMS_ENABLED,
+    SEND_TELEGRAM_ENABLED,
+    get_delivery_config_snapshot,
+    send_telegram,
+)
 from valuation_web import valuation_bp
 
 app = Flask(__name__)
@@ -358,6 +364,7 @@ INDEX_TEMPLATE = """
       <p>현재 Railway 프로세스가 실제로 읽고 있는 뉴스, LLM, 발송 채널 환경설정을 먼저 확인합니다.</p>
       <div class="actions">
         <button id="preflight-button" type="button" class="secondary">사전 점검 실행</button>
+        <button id="telegram-test-button" type="button">텔레그램 단독 테스트</button>
       </div>
       <pre id="preflight-result">아직 사전 점검 결과가 없습니다.</pre>
     </section>
@@ -702,6 +709,24 @@ INDEX_TEMPLATE = """
       }
     }
 
+    async function runTelegramTest() {
+      const preflightEl = document.getElementById("preflight-result");
+      const ok = window.confirm("텔레그램으로 단독 테스트 메시지를 발송할까요?");
+      if (!ok) return;
+
+      preflightEl.textContent = "텔레그램 단독 테스트를 실행하는 중입니다.";
+      try {
+        const response = await fetch("/test/telegram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const payload = await response.json();
+        preflightEl.textContent = JSON.stringify(payload, null, 2);
+      } catch (error) {
+        preflightEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
+      }
+    }
+
     document.getElementById("dry-run-form").addEventListener("submit", function (event) {
       event.preventDefault();
       submitForm(event.currentTarget, false);
@@ -714,6 +739,7 @@ INDEX_TEMPLATE = """
       submitForm(event.currentTarget, true);
     });
     document.getElementById("preflight-button").addEventListener("click", runPreflight);
+    document.getElementById("telegram-test-button").addEventListener("click", runTelegramTest);
 
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
@@ -965,6 +991,19 @@ def config_status():
             "delivery": get_delivery_config_snapshot(),
         }
     )
+
+
+@app.route("/test/telegram", methods=["POST"])
+def test_telegram():
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    message = (
+        "[KB자동화 텔레그램 단독 테스트]\n"
+        f"실행 시각: {timestamp}\n"
+        "이 메시지가 도착하면 텔레그램 봇/채팅 설정은 정상입니다."
+    )
+    result = send_telegram(message, enabled=True)
+    status_code = 200 if result.get("success") else 500
+    return jsonify(result), status_code
 
 
 @app.route("/run/artifacts/<run_id>", methods=["GET"])
