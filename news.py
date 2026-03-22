@@ -25,9 +25,6 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / ".env.example", override=False)
 
-NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
-
 NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
 TIMEOUT_SEC = 20
 DEFAULT_DISPLAY = 20
@@ -122,6 +119,35 @@ GENERIC_ARTICLE_BODY_SELECTORS = (
     "#article_txt",
     "article",
 )
+
+
+def _env_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = str(value).strip()
+    if normalized == "":
+        return default
+    return normalized
+
+
+def _mask_secret(value: str | None, *, keep_prefix: int = 4, keep_suffix: int = 4) -> str | None:
+    if not value:
+        return None
+    if len(value) <= keep_prefix + keep_suffix:
+        return "*" * len(value)
+    return f"{value[:keep_prefix]}...{value[-keep_suffix:]}"
+
+
+def get_news_config_snapshot() -> dict[str, Any]:
+    client_id = _env_text("NAVER_CLIENT_ID")
+    client_secret = _env_text("NAVER_CLIENT_SECRET")
+    return {
+        "client_id_present": bool(client_id),
+        "client_secret_present": bool(client_secret),
+        "client_id_masked": _mask_secret(client_id),
+        "client_secret_masked": _mask_secret(client_secret),
+    }
 
 SESSION = requests.Session()
 SESSION.headers.update(
@@ -519,12 +545,14 @@ def _dedupe_articles(articles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _build_news_headers() -> dict[str, str]:
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+    client_id = _env_text("NAVER_CLIENT_ID")
+    client_secret = _env_text("NAVER_CLIENT_SECRET")
+    if not client_id or not client_secret:
         raise RuntimeError("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 환경변수를 설정해야 합니다.")
 
     return {
-        "X-Naver-Client-Id": NAVER_CLIENT_ID,
-        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
     }
 
 

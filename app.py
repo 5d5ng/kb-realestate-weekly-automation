@@ -11,8 +11,10 @@ from uuid import uuid4
 
 from flask import Flask, jsonify, render_template_string, request, send_file
 
+from news import get_news_config_snapshot
+from reporters.common import get_generation_plan, get_llm_config_snapshot
 from scheduler import init_scheduler, run_pipeline
-from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED
+from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED, get_delivery_config_snapshot
 from valuation_web import valuation_bp
 
 app = Flask(__name__)
@@ -313,6 +315,9 @@ INDEX_TEMPLATE = """
       font-size: 13px;
       color: var(--muted);
     }
+    .preflight-card {
+      margin-top: 22px;
+    }
   </style>
 </head>
 <body>
@@ -345,6 +350,16 @@ INDEX_TEMPLATE = """
         <p>기준 단지와 비교 단지를 골라 현재 비율, 10년 평균 비율, 상승여력을 따로 확인합니다.</p>
         <a class="hero-link secondary" href="/valuation">분석 화면 열기</a>
       </div>
+    </section>
+
+    <section class="card preflight-card">
+      <span class="badge">사전 점검</span>
+      <h2>실행 전 API / 환경변수 확인</h2>
+      <p>현재 Railway 프로세스가 실제로 읽고 있는 뉴스, LLM, 발송 채널 환경설정을 먼저 확인합니다.</p>
+      <div class="actions">
+        <button id="preflight-button" type="button" class="secondary">사전 점검 실행</button>
+      </div>
+      <pre id="preflight-result">아직 사전 점검 결과가 없습니다.</pre>
     </section>
 
     <section class="grid">
@@ -675,6 +690,18 @@ INDEX_TEMPLATE = """
       }
     }
 
+    async function runPreflight() {
+      const preflightEl = document.getElementById("preflight-result");
+      preflightEl.textContent = "현재 프로세스 환경설정을 확인하는 중입니다.";
+      try {
+        const response = await fetch("/config/status");
+        const payload = await response.json();
+        preflightEl.textContent = JSON.stringify(payload, null, 2);
+      } catch (error) {
+        preflightEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
+      }
+    }
+
     document.getElementById("dry-run-form").addEventListener("submit", function (event) {
       event.preventDefault();
       submitForm(event.currentTarget, false);
@@ -686,6 +713,7 @@ INDEX_TEMPLATE = """
       if (!ok) return;
       submitForm(event.currentTarget, true);
     });
+    document.getElementById("preflight-button").addEventListener("click", runPreflight);
 
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
@@ -924,6 +952,19 @@ def run_status(run_id: str):
         if not state:
             return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
         return jsonify(state)
+
+
+@app.route("/config/status", methods=["GET"])
+def config_status():
+    return jsonify(
+        {
+            "success": True,
+            "news": get_news_config_snapshot(),
+            "llm": get_llm_config_snapshot(),
+            "generation_plan": get_generation_plan(),
+            "delivery": get_delivery_config_snapshot(),
+        }
+    )
 
 
 @app.route("/run/artifacts/<run_id>", methods=["GET"])

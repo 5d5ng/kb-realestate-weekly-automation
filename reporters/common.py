@@ -15,10 +15,6 @@ load_dotenv(BASE_DIR / ".env.example", override=False)
 
 TIMEOUT_SEC = 60
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-
 DEFAULT_TASK_MODELS = {
     "telegram_report": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 1400},
     "alimtalk_message": {"provider": "none", "model": "", "max_tokens": 0},
@@ -46,6 +42,64 @@ SESSION.headers.update(
         "user-agent": "Mozilla/5.0",
     }
 )
+
+
+def _env_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = str(value).strip()
+    if normalized == "":
+        return default
+    return normalized
+
+
+def _mask_secret(value: str | None, *, keep_prefix: int = 4, keep_suffix: int = 4) -> str | None:
+    if not value:
+        return None
+    if len(value) <= keep_prefix + keep_suffix:
+        return "*" * len(value)
+    return f"{value[:keep_prefix]}...{value[-keep_suffix:]}"
+
+
+def _provider_key_status(provider: str) -> dict[str, Any]:
+    provider = clean_text(provider).lower()
+    if provider == "openai":
+        key = _env_text("OPENAI_API_KEY")
+        return {"required": True, "present": bool(key), "masked": _mask_secret(key)}
+    if provider in {"gemini", "google"}:
+        key = _env_text("GEMINI_API_KEY")
+        return {"required": True, "present": bool(key), "masked": _mask_secret(key)}
+    if provider == "anthropic":
+        key = _env_text("ANTHROPIC_API_KEY")
+        return {"required": True, "present": bool(key), "masked": _mask_secret(key)}
+    return {"required": False, "present": True, "masked": None}
+
+
+def get_llm_config_snapshot() -> dict[str, Any]:
+    plan = get_generation_plan()
+    tasks: dict[str, Any] = {}
+    for task_name, config in plan.items():
+        provider = config["provider"]
+        key_status = _provider_key_status(provider)
+        tasks[task_name] = {
+            "provider": provider,
+            "model": config["model"],
+            "max_tokens": config["max_tokens"],
+            "api_key_required": key_status["required"],
+            "api_key_present": key_status["present"],
+            "api_key_masked": key_status["masked"],
+            "ready": (not key_status["required"]) or key_status["present"] or provider == "none",
+        }
+
+    return {
+        "providers": {
+            "openai": _provider_key_status("openai"),
+            "gemini": _provider_key_status("gemini"),
+            "anthropic": _provider_key_status("anthropic"),
+        },
+        "tasks": tasks,
+    }
 
 
 def clean_text(value: Any) -> str:
@@ -313,13 +367,14 @@ def _extract_anthropic_text(payload: dict[str, Any]) -> str:
 
 
 def _call_openai(model: str, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str | None:
-    if not OPENAI_API_KEY or not model:
+    api_key = _env_text("OPENAI_API_KEY")
+    if not api_key or not model:
         return None
 
     try:
         response = SESSION.post(
             "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
                 "temperature": 0.4,
@@ -345,13 +400,14 @@ def _call_openai(model: str, system_prompt: str, user_prompt: str, *, max_tokens
 
 
 def _call_gemini(model: str, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str | None:
-    if not GEMINI_API_KEY or not model:
+    api_key = _env_text("GEMINI_API_KEY")
+    if not api_key or not model:
         return None
 
     try:
         response = SESSION.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            params={"key": GEMINI_API_KEY},
+            params={"key": api_key},
             json={
                 "system_instruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -370,14 +426,15 @@ def _call_gemini(model: str, system_prompt: str, user_prompt: str, *, max_tokens
 
 
 def _call_anthropic(model: str, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str | None:
-    if not ANTHROPIC_API_KEY or not model:
+    api_key = _env_text("ANTHROPIC_API_KEY")
+    if not api_key or not model:
         return None
 
     try:
         response = SESSION.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
             },
             json={
