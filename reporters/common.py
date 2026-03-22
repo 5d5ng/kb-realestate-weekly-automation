@@ -270,18 +270,25 @@ def format_transactions_context(
     return "\n".join(lines).strip()
 
 
-def build_context(analysis: dict, news: list[dict[str, Any]]) -> str:
+def build_context(
+    analysis: dict,
+    news: list[dict[str, Any]],
+    transactions: dict[str, Any] | None = None,
+) -> str:
     latest_date = analysis.get("latest_date", "")
     sale = analysis.get("sale", {})
     rent = analysis.get("rent", {})
-    return (
+    sections = [
         f"[분석 기준일]\n{latest_date}\n\n"
         f"[매매 상위]\n{format_region_bucket(sale.get('top5', []))}\n\n"
         f"[매매 하위]\n{format_region_bucket(sale.get('bottom5', []))}\n\n"
         f"[전세 상위]\n{format_region_bucket(rent.get('top5', []))}\n\n"
-        f"[전세 하위]\n{format_region_bucket(rent.get('bottom5', []))}\n\n"
-        f"[주요 뉴스]\n{format_news_bucket(news)}"
-    )
+        f"[전세 하위]\n{format_region_bucket(rent.get('bottom5', []))}"
+    ]
+    if transactions is not None:
+        sections.append(f"[실거래 요약]\n{format_transactions_context(transactions)}")
+    sections.append(f"[주요 뉴스]\n{format_news_bucket(news)}")
+    return "\n\n".join(sections)
 
 
 def resolve_task_config(task_name: str) -> dict[str, Any]:

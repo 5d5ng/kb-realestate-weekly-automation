@@ -37,7 +37,7 @@ def generate_all_contents(
 ) -> dict:
     """4종 콘텐츠 일괄 생성 + 검토용 프롬프트 파일 저장"""
     return {
-        "telegram_report": generate_telegram_report(analysis, news),
+        "telegram_report": generate_telegram_report(analysis, news, transactions),
         "alimtalk_message": generate_alimtalk_message(analysis),
         "instagram_caption": generate_instagram_caption(analysis, news),
         "card_news_script": generate_card_news_script(analysis),
