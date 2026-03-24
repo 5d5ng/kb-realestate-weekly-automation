@@ -96,7 +96,7 @@ def _coerce_task_override(task_name: str, override: Any, base: dict[str, Any]) -
         if enabled is False:
             return {"provider": "none", "model": "", "max_tokens": 0}
         merged = dict(base)
-        for key in ("provider", "model", "max_tokens"):
+        for key in ("provider", "model", "max_tokens", "allow_backup"):
             if key in override and override[key] is not None:
                 merged[key] = override[key]
         return merged
@@ -358,6 +358,7 @@ def resolve_task_config(task_name: str, overrides: dict[str, Any] | None = None)
         "provider": provider,
         "model": model,
         "max_tokens": max_tokens,
+        "allow_backup": True,
     }
     active_overrides = overrides if overrides is not None else GENERATION_OVERRIDE_VAR.get({})
     return _coerce_task_override(task_name, active_overrides.get(task_name), config)
@@ -527,6 +528,7 @@ def generate_with_llm(
     provider = config["provider"]
     model = config["model"]
     max_tokens = config["max_tokens"]
+    allow_backup = bool(config.get("allow_backup", True))
 
     if provider == "none" or max_tokens <= 0:
         _record_generation_meta(
@@ -573,7 +575,7 @@ def generate_with_llm(
         return generated_text
 
     backup = BACKUP_TASK_MODELS.get(task_name)
-    if backup and backup.get("provider") != provider:
+    if allow_backup and backup and backup.get("provider") != provider:
         backup_provider = str(backup.get("provider") or "").lower()
         backup_model = str(backup.get("model") or "")
         backup_max_tokens = int(backup.get("max_tokens") or max_tokens or 0)

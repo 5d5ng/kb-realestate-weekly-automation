@@ -1680,6 +1680,7 @@ def _parse_llm_override(payload: dict[str, Any], task_name: str, *, default_enab
         "provider": preset.get("provider"),
         "model": preset.get("model"),
         "max_tokens": preset.get("max_tokens"),
+        "allow_backup": False,
     }
 
 
