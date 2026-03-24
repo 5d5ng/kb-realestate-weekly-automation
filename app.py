@@ -41,7 +41,7 @@ WEB_LLM_MODEL_PRESETS = {
             "label": "Gemini 2.5 Flash-Lite",
             "provider": "gemini",
             "model": "gemini-2.5-flash-lite",
-            "max_tokens": 4000,
+            "max_tokens": 5000,
         },
     ],
     "instagram_caption": [

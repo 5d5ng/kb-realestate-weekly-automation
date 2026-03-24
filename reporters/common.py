@@ -26,7 +26,7 @@ DEFAULT_TASK_MODELS = {
 }
 
 BACKUP_TASK_MODELS = {
-    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 4000},
+    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 5000},
 }
 
 BUCKET_LABELS = {
@@ -530,7 +530,8 @@ def generate_with_llm(
     max_tokens = config["max_tokens"]
     allow_backup = bool(config.get("allow_backup", True))
     if task_name == "telegram_report":
-        max_tokens = max(int(max_tokens or 0), 4000)
+        provider_floor = 5000 if provider in {"gemini", "google"} else 4000
+        max_tokens = max(int(max_tokens or 0), provider_floor)
 
     if provider == "none" or max_tokens <= 0:
         _record_generation_meta(
