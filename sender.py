@@ -79,6 +79,7 @@ def get_delivery_config_snapshot() -> dict[str, Any]:
 SEND_TELEGRAM_ENABLED = _env_flag("SEND_TELEGRAM_ENABLED", True)
 SEND_SMS_ENABLED = _env_flag("SEND_SMS_ENABLED", False)
 SEND_INSTAGRAM_ENABLED = _env_flag("SEND_INSTAGRAM_ENABLED", False)
+MAX_TELEGRAM_MESSAGE_LEN = 3900
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -102,6 +103,55 @@ def _build_skipped_result(detail: str, **extra: Any) -> dict[str, Any]:
     payload = {"success": True, "skipped": True, "detail": detail}
     payload.update(extra)
     return payload
+
+
+def _split_telegram_message(message: str, limit: int = MAX_TELEGRAM_MESSAGE_LEN) -> list[str]:
+    text = str(message or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    base_limit = max(500, limit - 16)
+    paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    def flush_current() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current.strip())
+            current = ""
+
+    for paragraph in paragraphs:
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) <= base_limit:
+            current = candidate
+            continue
+
+        flush_current()
+        remaining = paragraph
+        while remaining:
+            if len(remaining) <= base_limit:
+                current = remaining
+                break
+
+            split_at = remaining.rfind("\n", 0, base_limit)
+            if split_at < int(base_limit * 0.5):
+                split_at = remaining.rfind(" ", 0, base_limit)
+            if split_at < int(base_limit * 0.5):
+                split_at = base_limit
+
+            chunks.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].strip()
+
+    flush_current()
+
+    if len(chunks) <= 1:
+        return chunks
+
+    total = len(chunks)
+    return [f"[{index + 1}/{total}]\n{chunk}" for index, chunk in enumerate(chunks)]
 
 
 def _resolve_channel_enabled(override: bool | None, default: bool) -> bool:
@@ -154,29 +204,57 @@ def send_telegram(message: str, enabled: bool | None = None) -> dict[str, Any]:
             config_status=config_status,
         )
 
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "disable_web_page_preview": True,
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:  # pragma: no cover - external API
-        return _build_result(False, f"텔레그램 발송 실패: {exc}")
+    chunks = _split_telegram_message(message)
+    if not chunks:
+        return _build_result(False, "텔레그램으로 보낼 메시지가 비어 있습니다.")
 
-    if not payload.get("ok"):
-        return _build_result(False, "텔레그램 API 응답이 실패로 반환되었습니다.", response=payload)
+    message_ids: list[int] = []
+    result: dict[str, Any] = {}
 
-    result = payload.get("result", {})
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": chunk,
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # pragma: no cover - external API
+            return _build_result(
+                False,
+                f"텔레그램 발송 실패 ({chunk_index}/{len(chunks)}): {exc}",
+                sent_chunks=len(message_ids),
+                total_chunks=len(chunks),
+                message_ids=message_ids,
+            )
+
+        if not payload.get("ok"):
+            return _build_result(
+                False,
+                f"텔레그램 API 응답이 실패로 반환되었습니다. ({chunk_index}/{len(chunks)})",
+                response=payload,
+                sent_chunks=len(message_ids),
+                total_chunks=len(chunks),
+                message_ids=message_ids,
+            )
+
+        result = payload.get("result", {})
+        message_id = result.get("message_id")
+        if isinstance(message_id, int):
+            message_ids.append(message_id)
+
     return _build_result(
         True,
         "텔레그램 발송 성공",
         message_id=result.get("message_id"),
+        message_ids=message_ids,
+        chunk_count=len(chunks),
+        characters=len(message),
         chat_id=result.get("chat", {}).get("id"),
     )
 

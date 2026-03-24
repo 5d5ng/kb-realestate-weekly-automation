@@ -347,7 +347,7 @@ def run_pipeline(
     transaction_limit: int = 5,
     refresh_cache: bool | None = None,
     channel_overrides: dict[str, bool] | None = None,
-    llm_overrides: dict[str, bool] | None = None,
+    llm_overrides: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """전체 파이프라인 실행 컨트롤러"""
@@ -682,7 +682,7 @@ def run_news_only_pipeline(
     news_days: int = 7,
     news_max_articles: int = 12,
     channel_overrides: dict[str, bool] | None = None,
-    llm_overrides: dict[str, bool] | None = None,
+    llm_overrides: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     from news import get_weekly_news

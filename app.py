@@ -32,10 +32,52 @@ RUN_STATE_LOCK = threading.Lock()
 RUN_STATE: dict[str, dict[str, Any]] = {}
 MAX_RUN_HISTORY = 20
 RUN_SEQUENCE = 0
+WEB_LLM_MODEL_PRESETS = {
+    "telegram_report": [
+        {"id": "default", "label": "기본값 사용", "provider": None, "model": None, "max_tokens": None},
+        {"id": "openai_gpt5mini", "label": "OpenAI GPT-5 mini", "provider": "openai", "model": "gpt-5-mini", "max_tokens": 2200},
+        {
+            "id": "gemini_flash_lite",
+            "label": "Gemini 2.5 Flash-Lite",
+            "provider": "gemini",
+            "model": "gemini-2.5-flash-lite",
+            "max_tokens": 2200,
+        },
+    ],
+    "instagram_caption": [
+        {"id": "default", "label": "기본값 사용", "provider": None, "model": None, "max_tokens": None},
+        {"id": "gemini_flash_lite", "label": "Gemini 2.5 Flash-Lite", "provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 700},
+        {"id": "openai_gpt5mini", "label": "OpenAI GPT-5 mini", "provider": "openai", "model": "gpt-5-mini", "max_tokens": 900},
+    ],
+    "card_news_script": [
+        {"id": "default", "label": "기본값 사용", "provider": None, "model": None, "max_tokens": None},
+        {"id": "openai_gpt5mini", "label": "OpenAI GPT-5 mini", "provider": "openai", "model": "gpt-5-mini", "max_tokens": 1200},
+        {"id": "gemini_flash_lite", "label": "Gemini 2.5 Flash-Lite", "provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 1200},
+    ],
+}
+WEB_LLM_MODEL_PRESET_INDEX = {
+    task_name: {item["id"]: item for item in presets}
+    for task_name, presets in WEB_LLM_MODEL_PRESETS.items()
+}
 WEB_LLM_TASKS = [
-    {"name": "telegram_report", "label": "텔레그램 리포트", "description": "주간 리포트 문안을 LLM으로 다듬습니다."},
-    {"name": "instagram_caption", "label": "인스타 캡션", "description": "인스타 캡션 문안을 LLM으로 생성합니다."},
-    {"name": "card_news_script", "label": "카드뉴스 스크립트", "description": "카드뉴스용 슬라이드 문안을 LLM으로 생성합니다."},
+    {
+        "name": "telegram_report",
+        "label": "텔레그램 리포트",
+        "description": "주간 리포트 문안을 LLM으로 다듬습니다.",
+        "model_options": WEB_LLM_MODEL_PRESETS["telegram_report"],
+    },
+    {
+        "name": "instagram_caption",
+        "label": "인스타 캡션",
+        "description": "인스타 캡션 문안을 LLM으로 생성합니다.",
+        "model_options": WEB_LLM_MODEL_PRESETS["instagram_caption"],
+    },
+    {
+        "name": "card_news_script",
+        "label": "카드뉴스 스크립트",
+        "description": "카드뉴스용 슬라이드 문안을 LLM으로 생성합니다.",
+        "model_options": WEB_LLM_MODEL_PRESETS["card_news_script"],
+    },
 ]
 
 INDEX_TEMPLATE = """
@@ -167,6 +209,15 @@ INDEX_TEMPLATE = """
       background: #fff;
       font-size: 14px;
     }
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 11px 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      font-size: 14px;
+    }
     .channel-list {
       display: grid;
       gap: 10px;
@@ -189,6 +240,7 @@ INDEX_TEMPLATE = """
     .channel-copy {
       display: grid;
       gap: 4px;
+      flex: 1;
     }
     .channel-title {
       font-size: 14px;
@@ -199,6 +251,17 @@ INDEX_TEMPLATE = """
       font-size: 13px;
       color: var(--muted);
       line-height: 1.5;
+    }
+    .llm-model-picker {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .llm-model-picker label {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
     }
     .actions {
       display: flex;
@@ -744,6 +807,19 @@ INDEX_TEMPLATE = """
             <span class="channel-copy">
               <span class="channel-title">{{ task.label }}</span>
               <span class="channel-desc">{{ task.description }}</span>
+              <span class="llm-model-picker">
+                <label for="dry-llm-model-{{ task.name }}">사용 모델</label>
+                <select id="dry-llm-model-{{ task.name }}" name="llm_model_{{ task.name }}">
+                  {% for option in task.model_options %}
+                  <option
+                    value="{{ option.id }}"
+                    {% if default_llm_models[task.name] == option.id %}selected{% endif %}
+                  >
+                    {{ option.label }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </span>
             </span>
           </label>
           {% endfor %}
@@ -780,6 +856,19 @@ INDEX_TEMPLATE = """
             <span class="channel-copy">
               <span class="channel-title">{{ task.label }}</span>
               <span class="channel-desc">{{ task.description }}</span>
+              <span class="llm-model-picker">
+                <label for="send-llm-model-{{ task.name }}">사용 모델</label>
+                <select id="send-llm-model-{{ task.name }}" name="llm_model_{{ task.name }}">
+                  {% for option in task.model_options %}
+                  <option
+                    value="{{ option.id }}"
+                    {% if default_llm_models[task.name] == option.id %}selected{% endif %}
+                  >
+                    {{ option.label }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </span>
             </span>
           </label>
           {% endfor %}
@@ -851,6 +940,19 @@ INDEX_TEMPLATE = """
             <span class="channel-copy">
               <span class="channel-title">텔레그램 리포트</span>
               <span class="channel-desc">뉴스 전용 텔레그램 브리핑 문안을 LLM으로 다듬습니다.</span>
+              <span class="llm-model-picker">
+                <label for="news-only-llm-model-telegram-report">사용 모델</label>
+                <select id="news-only-llm-model-telegram-report" name="llm_model_telegram_report">
+                  {% for option in telegram_model_options %}
+                  <option
+                    value="{{ option.id }}"
+                    {% if default_llm_models['telegram_report'] == option.id %}selected{% endif %}
+                  >
+                    {{ option.label }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </span>
             </span>
           </label>
         </div>
@@ -1136,8 +1238,21 @@ INDEX_TEMPLATE = """
       data.llm_telegram_report = form.querySelector('input[name="llm_telegram_report"]')?.checked || false;
       data.llm_instagram_caption = form.querySelector('input[name="llm_instagram_caption"]')?.checked || false;
       data.llm_card_news_script = form.querySelector('input[name="llm_card_news_script"]')?.checked || false;
+      data.llm_model_telegram_report = form.querySelector('select[name="llm_model_telegram_report"]')?.value || "default";
+      data.llm_model_instagram_caption = form.querySelector('select[name="llm_model_instagram_caption"]')?.value || "default";
+      data.llm_model_card_news_script = form.querySelector('select[name="llm_model_card_news_script"]')?.value || "default";
 
       return data;
+    }
+
+    function syncLlmModelControls() {
+      document.querySelectorAll('input[name^="llm_"]').forEach((checkbox) => {
+        const taskName = checkbox.name.replace("llm_", "");
+        const form = checkbox.closest("form");
+        const select = form?.querySelector(`select[name="llm_model_${taskName}"]`);
+        if (!select) return;
+        select.disabled = !checkbox.checked;
+      });
     }
 
     function resetPromptPanel() {
@@ -1505,6 +1620,9 @@ INDEX_TEMPLATE = """
     document.getElementById("refresh-runs-button").addEventListener("click", loadRecentRuns);
     document.getElementById("preflight-button").addEventListener("click", runPreflight);
     document.getElementById("telegram-test-button").addEventListener("click", runTelegramTest);
+    document.querySelectorAll('input[name^="llm_"]').forEach((checkbox) => {
+      checkbox.addEventListener("change", syncLlmModelControls);
+    });
     document.getElementById("copy-current-prompt").addEventListener("click", async function () {
       const statusEl = document.getElementById("prompt-copy-status");
       if (!currentPromptContent) {
@@ -1518,6 +1636,7 @@ INDEX_TEMPLATE = """
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
     resetPromptPanel();
+    syncLlmModelControls();
     loadRecentRuns();
 
     const savedRunId = localStorage.getItem(ACTIVE_RUN_STORAGE_KEY);
@@ -1546,6 +1665,24 @@ def _parse_int(value: object, default: int) -> int:
         return default
 
 
+def _parse_llm_override(payload: dict[str, Any], task_name: str, *, default_enabled: bool = True) -> dict[str, Any] | bool:
+    enabled = _parse_bool(payload.get(f"llm_{task_name}"), default=default_enabled)
+    if not enabled:
+        return False
+
+    model_choice = str(payload.get(f"llm_model_{task_name}") or "default").strip()
+    preset = WEB_LLM_MODEL_PRESET_INDEX.get(task_name, {}).get(model_choice)
+    if not preset or model_choice == "default":
+        return True
+
+    return {
+        "enabled": True,
+        "provider": preset.get("provider"),
+        "model": preset.get("model"),
+        "max_tokens": preset.get("max_tokens"),
+    }
+
+
 def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_mode = str(payload.get("run_mode") or "full").strip().lower()
     if run_mode not in {"full", "news_only"}:
@@ -1560,9 +1697,9 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "instagram": _parse_bool(payload.get("send_instagram"), default=False) if run_mode == "full" else False,
     }
     llm_overrides = {
-        "telegram_report": _parse_bool(payload.get("llm_telegram_report"), default=True),
-        "instagram_caption": _parse_bool(payload.get("llm_instagram_caption"), default=True),
-        "card_news_script": _parse_bool(payload.get("llm_card_news_script"), default=True),
+        "telegram_report": _parse_llm_override(payload, "telegram_report", default_enabled=True),
+        "instagram_caption": _parse_llm_override(payload, "instagram_caption", default_enabled=True),
+        "card_news_script": _parse_llm_override(payload, "card_news_script", default_enabled=True),
     }
     return {
         "run_mode": run_mode,
@@ -1755,6 +1892,8 @@ def index():
             and int(get_generation_plan().get(task["name"], {}).get("max_tokens", 0)) > 0
             for task in WEB_LLM_TASKS
         },
+        default_llm_models={task["name"]: "default" for task in WEB_LLM_TASKS},
+        telegram_model_options=WEB_LLM_MODEL_PRESETS["telegram_report"],
     )
 
 

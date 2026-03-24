@@ -18,7 +18,7 @@ load_dotenv(BASE_DIR / ".env.example", override=False)
 TIMEOUT_SEC = 60
 
 DEFAULT_TASK_MODELS = {
-    "telegram_report": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 1400},
+    "telegram_report": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 2200},
     "alimtalk_message": {"provider": "none", "model": "", "max_tokens": 0},
     "instagram_caption": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 700},
     "card_news_script": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 1000},
@@ -26,7 +26,7 @@ DEFAULT_TASK_MODELS = {
 }
 
 BACKUP_TASK_MODELS = {
-    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 1400},
+    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 2200},
 }
 
 BUCKET_LABELS = {
