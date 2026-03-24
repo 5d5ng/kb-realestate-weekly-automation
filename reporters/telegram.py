@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .common import (
     BUCKET_LABELS,
     build_context,
@@ -10,6 +12,54 @@ from .common import (
 )
 
 MAX_TELEGRAM_NEWS_ITEMS = 30
+
+SECTION_TITLES = (
+    "매매 흐름",
+    "전세 흐름",
+    "실거래 체크",
+    "주요 뉴스",
+    "한줄 요약",
+    "한 줄 정리",
+    "한줄 정리",
+)
+
+
+def _normalize_telegram_newsletter(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return normalized
+
+    normalized = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1\n링크: \2", normalized)
+    normalized = normalized.replace("**", "")
+    normalized = normalized.replace("__", "")
+    normalized = normalized.replace("`", "")
+
+    normalized = re.sub(r"^\s{0,3}#{1,6}\s*", "", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"\s+\*\s+", "\n- ", normalized)
+    normalized = re.sub(r"^\s*[*•]\s+", "- ", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"\n- ([^\n]+?) \| 링크: (https?://\S+)", r"\n  출처: \1\n  링크: \2", normalized)
+    normalized = re.sub(r"(?<!\n)\s+출처:\s+", "\n  출처: ", normalized)
+    normalized = re.sub(r"(?<!\n)\s+링크:\s+", "\n  링크: ", normalized)
+    normalized = re.sub(r"(링크:\s+https?://\S+)\s+(?=[가-힣A-Z0-9\"“])", r"\1\n\n", normalized)
+    normalized = re.sub(r"(?<!^)\s(?=\d+\.\s)", "\n", normalized)
+    normalized = re.sub(
+        r"^(\d+\.\s.*?)(?:\s+출처:\s+)(.*?)(?:\s+링크:\s+)(https?://\S+)$",
+        r"\1\n  출처: \2\n  링크: \3",
+        normalized,
+        flags=re.MULTILINE,
+    )
+
+    for title in SECTION_TITLES:
+        normalized = re.sub(
+            rf"\s*{re.escape(title)}\s*",
+            lambda _m, section=title: f"\n\n[{section}]\n",
+            normalized,
+            count=1,
+        )
+
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+    return normalized.strip()
 
 
 def _format_transaction_highlights(
@@ -145,10 +195,13 @@ def build_telegram_report_prompt(
         "- 구조는 제목, 매매 흐름, 전세 흐름, 실거래 체크, 주요 뉴스, 한줄 시사점 순서\n"
         "- 실거래 체크에서는 최근 거래 단지명, 면적, 가격, 최근 전세 흐름을 짧게 요약\n"
         f"- 주요 뉴스는 최대 {effective_news_limit}건까지만 반영\n"
-        "- 마크다운 친화적으로 작성\n\n"
+        "- 일반 텍스트 뉴스레터 형식으로 작성\n"
+        "- Markdown 문법(#, ##, *, **, [], ()) 사용 금지\n"
+        "- 섹션 제목은 [매매 흐름], [전세 흐름], [실거래 체크], [주요 뉴스], [한줄 시사점]처럼 한 줄로 작성\n"
+        "- 기사 1건은 제목 1줄, 출처/날짜 1줄, 링크 1줄 정도로 가독성 있게 배치\n\n"
         f"{build_context(analysis, news[:effective_news_limit], transactions)}"
     )
-    system = "너는 한국 부동산 시장 콘텐츠 에디터다. 없는 수치나 사실을 만들지 말고 제공된 데이터만 사용해라."
+    system = "너는 한국 부동산 시장 콘텐츠 에디터다. 텔레그램 일반 텍스트 뉴스레터처럼 읽기 좋게 작성하고, 없는 수치나 사실을 만들지 말고 제공된 데이터만 사용해라."
     return system, prompt
 
 
@@ -164,10 +217,13 @@ def build_news_only_telegram_prompt(
         "- 구조는 제목, 주요 뉴스, 한줄 정리 순서\n"
         f"- 주요 뉴스는 최대 {effective_news_limit}건까지만 반영\n"
         "- 기사 제목, 언론사, 링크를 빠짐없이 반영\n"
+        "- 일반 텍스트 뉴스레터 형식으로 작성\n"
+        "- Markdown 문법(#, ##, *, **, [], ()) 사용 금지\n"
+        "- 기사 1건은 제목 1줄, 출처/날짜 1줄, 링크 1줄로 정리\n"
         "- 제공된 기사만 사용하고 과장하지 말 것\n\n"
         f"[주요 뉴스]\n{news_context}"
     )
-    system = "너는 한국 부동산 뉴스 브리핑 에디터다. 제공된 기사만 사용해 텔레그램용 요약을 작성해라."
+    system = "너는 한국 부동산 뉴스 브리핑 에디터다. 제공된 기사만 사용해 텔레그램 일반 텍스트 뉴스레터처럼 요약을 작성해라."
     return system, prompt
 
 
@@ -185,7 +241,8 @@ def generate_telegram_report(
         transactions,
         max_news_items=max_news_items,
     )
-    return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    generated = generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    return _normalize_telegram_newsletter(generated)
 
 
 def generate_news_only_telegram_report(
@@ -195,4 +252,5 @@ def generate_news_only_telegram_report(
 ) -> str:
     fallback = fallback_news_only_telegram_report(news, max_news_items=max_news_items)
     system, prompt = build_news_only_telegram_prompt(news, max_news_items=max_news_items)
-    return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    generated = generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    return _normalize_telegram_newsletter(generated)
