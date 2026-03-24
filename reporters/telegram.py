@@ -12,6 +12,11 @@ from .common import (
 )
 
 MAX_TELEGRAM_NEWS_ITEMS = 30
+TARGET_NEWS_PUBLISHERS = ("한국경제", "매일경제", "서울경제", "조선일보", "중앙일보", "동아일보")
+INLINE_NEWS_PATTERN = re.compile(
+    rf"(?P<title>.*?)(?P<publisher>{'|'.join(TARGET_NEWS_PUBLISHERS)})\s+(?P<page>[A-Z]?\d+)\s+(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\s+(?P<url>https?://\S+)",
+    flags=re.DOTALL,
+)
 
 SECTION_TITLES = (
     "매매 흐름",
@@ -22,6 +27,51 @@ SECTION_TITLES = (
     "한 줄 정리",
     "한줄 정리",
 )
+
+
+def _format_inline_news_block(block: str) -> str:
+    flattened = re.sub(r"\s+", " ", str(block or "")).strip()
+    if not flattened:
+        return block.strip()
+
+    matches = list(INLINE_NEWS_PATTERN.finditer(flattened))
+    if not matches:
+        return re.sub(r"(https?://\S+)\s+(?=[가-힣A-Z0-9\"“])", r"\1\n\n", block.strip())
+
+    items: list[str] = []
+    for index, match in enumerate(matches, start=1):
+        title = re.sub(r"^(?:-|\d+\.)\s*", "", match.group("title")).strip(" -")
+        publisher = match.group("publisher").strip()
+        page = match.group("page").strip()
+        issue_date = match.group("date").strip()
+        url = match.group("url").strip()
+        page_text = f" {page}" if page else ""
+        items.append(
+            f"{index}. {title}\n"
+            f"  출처: {publisher}{page_text} | {issue_date}\n"
+            f"  링크: {url}"
+        )
+
+    return "\n\n".join(items).strip()
+
+
+def _normalize_news_section_layout(text: str) -> str:
+    match = re.search(r"(\[주요 뉴스\]\n)(.*?)(?=\n\[[^\]]+\]\n|\Z)", text, flags=re.DOTALL)
+    if not match:
+        return text
+
+    header = match.group(1)
+    block = match.group(2).strip()
+    if not block:
+        return text
+
+    if block.count("출처:") >= 2 and block.count("링크:") >= 2:
+        normalized_block = re.sub(r"(링크:\s+https?://\S+)\s+(?=\d+\.\s)", r"\1\n\n", block)
+        normalized_block = re.sub(r"(링크:\s+https?://\S+)\s+(?=[가-힣A-Z0-9\"“])", r"\1\n\n", normalized_block)
+    else:
+        normalized_block = _format_inline_news_block(block)
+
+    return text[: match.start()] + header + normalized_block + text[match.end() :]
 
 
 def _normalize_telegram_newsletter(text: str) -> str:
@@ -51,12 +101,14 @@ def _normalize_telegram_newsletter(text: str) -> str:
 
     for title in SECTION_TITLES:
         normalized = re.sub(
-            rf"\s*{re.escape(title)}\s*",
+            rf"\s*(?:\[\s*)?{re.escape(title)}(?:\s*\])?\s*",
             lambda _m, section=title: f"\n\n[{section}]\n",
             normalized,
             count=1,
         )
 
+    normalized = _normalize_news_section_layout(normalized)
+    normalized = re.sub(r"(https?://\S+)\n(\[[^\]]+\])", r"\1\n\n\2", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     normalized = re.sub(r"[ \t]+\n", "\n", normalized)
     return normalized.strip()
