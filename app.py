@@ -35,13 +35,13 @@ RUN_SEQUENCE = 0
 WEB_LLM_MODEL_PRESETS = {
     "telegram_report": [
         {"id": "default", "label": "기본값 사용", "provider": None, "model": None, "max_tokens": None},
-        {"id": "openai_gpt5mini", "label": "OpenAI GPT-5 mini", "provider": "openai", "model": "gpt-5-mini", "max_tokens": 2200},
+        {"id": "openai_gpt5mini", "label": "OpenAI GPT-5 mini", "provider": "openai", "model": "gpt-5-mini", "max_tokens": 4000},
         {
             "id": "gemini_flash_lite",
             "label": "Gemini 2.5 Flash-Lite",
             "provider": "gemini",
             "model": "gemini-2.5-flash-lite",
-            "max_tokens": 2200,
+            "max_tokens": 4000,
         },
     ],
     "instagram_caption": [
