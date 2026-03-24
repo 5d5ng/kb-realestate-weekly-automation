@@ -25,6 +25,10 @@ DEFAULT_TASK_MODELS = {
     "naver_blog_post": {"provider": "none", "model": "", "max_tokens": 0},
 }
 
+BACKUP_TASK_MODELS = {
+    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 1400},
+}
+
 BUCKET_LABELS = {
     "capital_sale_top5": "수도권 매매 상승 상위 5",
     "capital_sale_bottom5": "수도권 매매 하위 5",
@@ -45,6 +49,7 @@ SESSION.headers.update(
     }
 )
 GENERATION_OVERRIDE_VAR: ContextVar[dict[str, Any]] = ContextVar("generation_override", default={})
+GENERATION_META_VAR: ContextVar[dict[str, Any]] = ContextVar("generation_meta", default={})
 
 
 def _env_text(name: str, default: str | None = None) -> str | None:
@@ -105,6 +110,25 @@ def generation_override_context(overrides: dict[str, Any] | None):
         yield
     finally:
         GENERATION_OVERRIDE_VAR.reset(token)
+
+
+@contextmanager
+def generation_meta_context():
+    token = GENERATION_META_VAR.set({})
+    try:
+        yield
+    finally:
+        GENERATION_META_VAR.reset(token)
+
+
+def _record_generation_meta(task_name: str, **metadata: Any) -> None:
+    current = dict(GENERATION_META_VAR.get({}))
+    current[task_name] = metadata
+    GENERATION_META_VAR.set(current)
+
+
+def get_generation_meta() -> dict[str, Any]:
+    return dict(GENERATION_META_VAR.get({}))
 
 
 def get_llm_config_snapshot(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -417,7 +441,6 @@ def _call_openai(model: str, system_prompt: str, user_prompt: str, *, max_tokens
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "temperature": 0.4,
                 "max_output_tokens": max_tokens,
                 "input": [
                     {
@@ -506,11 +529,85 @@ def generate_with_llm(
     max_tokens = config["max_tokens"]
 
     if provider == "none" or max_tokens <= 0:
+        _record_generation_meta(
+            task_name,
+            provider=provider,
+            model=model,
+            max_tokens=max_tokens,
+            used_llm=False,
+            fallback_used=True,
+            reason="disabled",
+        )
         return fallback_text
+
+    generated_text: str | None = None
     if provider == "openai":
-        return _call_openai(model, system_prompt, user_prompt, max_tokens=max_tokens) or fallback_text
-    if provider in {"gemini", "google"}:
-        return _call_gemini(model, system_prompt, user_prompt, max_tokens=max_tokens) or fallback_text
-    if provider == "anthropic":
-        return _call_anthropic(model, system_prompt, user_prompt, max_tokens=max_tokens) or fallback_text
+        generated_text = _call_openai(model, system_prompt, user_prompt, max_tokens=max_tokens)
+    elif provider in {"gemini", "google"}:
+        generated_text = _call_gemini(model, system_prompt, user_prompt, max_tokens=max_tokens)
+    elif provider == "anthropic":
+        generated_text = _call_anthropic(model, system_prompt, user_prompt, max_tokens=max_tokens)
+    else:
+        _record_generation_meta(
+            task_name,
+            provider=provider,
+            model=model,
+            max_tokens=max_tokens,
+            used_llm=False,
+            fallback_used=True,
+            reason="unknown_provider",
+        )
+        return fallback_text
+
+    if generated_text:
+        _record_generation_meta(
+            task_name,
+            provider=provider,
+            model=model,
+            max_tokens=max_tokens,
+            used_llm=True,
+            fallback_used=False,
+            reason="llm_success",
+            backup_used=False,
+        )
+        return generated_text
+
+    backup = BACKUP_TASK_MODELS.get(task_name)
+    if backup and backup.get("provider") != provider:
+        backup_provider = str(backup.get("provider") or "").lower()
+        backup_model = str(backup.get("model") or "")
+        backup_max_tokens = int(backup.get("max_tokens") or max_tokens or 0)
+        backup_text: str | None = None
+        if backup_provider == "openai":
+            backup_text = _call_openai(backup_model, system_prompt, user_prompt, max_tokens=backup_max_tokens)
+        elif backup_provider in {"gemini", "google"}:
+            backup_text = _call_gemini(backup_model, system_prompt, user_prompt, max_tokens=backup_max_tokens)
+        elif backup_provider == "anthropic":
+            backup_text = _call_anthropic(backup_model, system_prompt, user_prompt, max_tokens=backup_max_tokens)
+
+        if backup_text:
+            _record_generation_meta(
+                task_name,
+                provider=backup_provider,
+                model=backup_model,
+                max_tokens=backup_max_tokens,
+                used_llm=True,
+                fallback_used=False,
+                reason="backup_llm_success",
+                backup_used=True,
+                primary_provider=provider,
+                primary_model=model,
+            )
+            return backup_text
+
+    _record_generation_meta(
+        task_name,
+        provider=provider,
+        model=model,
+        max_tokens=max_tokens,
+        used_llm=False,
+        fallback_used=True,
+        reason="llm_failed_or_empty",
+        backup_used=False,
+    )
     return fallback_text

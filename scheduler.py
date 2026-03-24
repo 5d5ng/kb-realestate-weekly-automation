@@ -278,6 +278,7 @@ def _summarize_contents(contents: dict[str, Any]) -> dict[str, Any]:
         "keys": sorted(contents.keys()),
         "prompt_files": contents.get("prompt_files", {}),
         "generation_plan": contents.get("generation_plan", {}),
+        "generation_meta": contents.get("generation_meta", {}),
     }
 
 

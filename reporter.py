@@ -9,7 +9,13 @@ from reporters.alimtalk import generate_alimtalk_message
 from reporters.blog import build_naver_blog_prompt
 from reporters.cardnews import generate_card_news_script
 from reporters.cardnews import build_card_news_prompt
-from reporters.common import generation_override_context, get_generation_plan, save_prompt_file
+from reporters.common import (
+    generation_meta_context,
+    generation_override_context,
+    get_generation_meta,
+    get_generation_plan,
+    save_prompt_file,
+)
 from reporters.instagram import build_instagram_caption_prompt, generate_instagram_caption
 from reporters.telegram import (
     build_news_only_telegram_prompt,
@@ -54,24 +60,27 @@ def generate_all_contents(
 ) -> dict:
     """4종 콘텐츠 일괄 생성 + 검토용 프롬프트 파일 저장"""
     with generation_override_context(llm_overrides):
-        return {
-            "telegram_report": generate_telegram_report(
-                analysis,
-                news,
-                transactions,
-                max_news_items=telegram_news_limit,
-            ),
-            "alimtalk_message": generate_alimtalk_message(analysis),
-            "instagram_caption": generate_instagram_caption(analysis, news),
-            "card_news_script": generate_card_news_script(analysis),
-            "generation_plan": get_generation_plan(),
-            "prompt_files": export_prompt_files(
-                analysis,
-                news,
-                transactions,
-                telegram_news_limit=telegram_news_limit,
-            ),
-        }
+        with generation_meta_context():
+            payload = {
+                "telegram_report": generate_telegram_report(
+                    analysis,
+                    news,
+                    transactions,
+                    max_news_items=telegram_news_limit,
+                ),
+                "alimtalk_message": generate_alimtalk_message(analysis),
+                "instagram_caption": generate_instagram_caption(analysis, news),
+                "card_news_script": generate_card_news_script(analysis),
+                "generation_plan": get_generation_plan(),
+                "prompt_files": export_prompt_files(
+                    analysis,
+                    news,
+                    transactions,
+                    telegram_news_limit=telegram_news_limit,
+                ),
+            }
+            payload["generation_meta"] = get_generation_meta()
+            return payload
 
 
 def generate_news_only_contents(
@@ -81,24 +90,27 @@ def generate_news_only_contents(
     telegram_news_limit: int = 30,
 ) -> dict:
     with generation_override_context(llm_overrides):
-        telegram_system, telegram_prompt = build_news_only_telegram_prompt(
-            news,
-            max_news_items=telegram_news_limit,
-        )
-        telegram_report = generate_news_only_telegram_report(
-            news,
-            max_news_items=telegram_news_limit,
-        )
-        return {
-            "telegram_report": telegram_report,
-            "sms_message": telegram_report,
-            "generation_plan": get_generation_plan(),
-            "prompt_files": {
-                "telegram_report": save_prompt_file(
-                    "telegram_report",
-                    telegram_system,
-                    telegram_prompt,
-                    fallback_text=telegram_report,
-                )
-            },
-        }
+        with generation_meta_context():
+            telegram_system, telegram_prompt = build_news_only_telegram_prompt(
+                news,
+                max_news_items=telegram_news_limit,
+            )
+            telegram_report = generate_news_only_telegram_report(
+                news,
+                max_news_items=telegram_news_limit,
+            )
+            payload = {
+                "telegram_report": telegram_report,
+                "sms_message": telegram_report,
+                "generation_plan": get_generation_plan(),
+                "prompt_files": {
+                    "telegram_report": save_prompt_file(
+                        "telegram_report",
+                        telegram_system,
+                        telegram_prompt,
+                        fallback_text=telegram_report,
+                    )
+                },
+            }
+            payload["generation_meta"] = get_generation_meta()
+            return payload
