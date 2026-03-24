@@ -326,6 +326,17 @@ def _collect_artifact_files(analysis: dict[str, Any], contents: dict[str, Any]) 
     return deduped
 
 
+def _collect_prompt_artifact_files(contents: dict[str, Any]) -> list[str]:
+    artifact_files: list[str] = []
+    seen: set[str] = set()
+    prompt_files = contents.get("prompt_files", {}) or {}
+    for value in prompt_files.values():
+        if isinstance(value, str) and value and value not in seen:
+            artifact_files.append(value)
+            seen.add(value)
+    return artifact_files
+
+
 def run_pipeline(
     *,
     send: bool = True,
@@ -656,6 +667,186 @@ def run_pipeline(
             "send_enabled": send,
             "trigger": trigger,
             "refresh_cache": refresh_cache,
+            "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
+        }
+    finally:
+        _finish_pipeline_lock(lock_handle, run_context)
+
+
+def run_news_only_pipeline(
+    *,
+    send: bool = True,
+    trigger: str = "manual",
+    news_days: int = 7,
+    news_max_articles: int = 12,
+    channel_overrides: dict[str, bool] | None = None,
+    llm_overrides: dict[str, bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    from news import get_weekly_news
+    from reporter import generate_news_only_contents
+    from sender import send_all
+
+    started_at = _now_text()
+    started_perf = time.perf_counter()
+    current_stage = "news"
+    lock_handle = None
+    run_context: dict[str, Any] | None = None
+
+    _log(f"뉴스 전용 파이프라인 시작 | trigger={trigger} | send={send}")
+    _emit_progress(
+        progress_callback,
+        stage="init",
+        message="뉴스 전용 파이프라인을 시작합니다.",
+        trigger=trigger,
+        send=send,
+    )
+
+    try:
+        lock_handle, run_context = _acquire_pipeline_lock(trigger)
+        _emit_progress(
+            progress_callback,
+            stage="lock",
+            message="실행 락을 획득했습니다.",
+            trigger=trigger,
+            status="completed",
+        )
+
+        _emit_progress(
+            progress_callback,
+            stage="news",
+            message="뉴스 수집을 시작합니다.",
+            news_days=news_days,
+            news_max_articles=news_max_articles,
+        )
+        news = get_weekly_news(days=news_days, max_articles=news_max_articles)
+        news_summary = _summarize_news(news, max_titles=min(max(1, news_max_articles), 10))
+        _log(f"뉴스 전용 수집 완료 | count={news_summary['count']}")
+        _emit_progress(
+            progress_callback,
+            stage="news",
+            message="뉴스 수집이 완료되었습니다.",
+            count=news_summary["count"],
+            top_titles=news_summary["top_titles"],
+            status="completed",
+        )
+        _check_for_manual_override(run_context, current_stage)
+
+        current_stage = "contents"
+        _emit_progress(progress_callback, stage="contents", message="뉴스 전용 콘텐츠 생성을 시작합니다.")
+        contents = generate_news_only_contents(
+            news,
+            llm_overrides=llm_overrides,
+            telegram_news_limit=min(max(1, news_max_articles), 30),
+        )
+        contents_summary = _summarize_contents(contents)
+        _emit_progress(
+            progress_callback,
+            stage="contents",
+            message="뉴스 전용 콘텐츠 생성이 완료되었습니다.",
+            prompt_files=contents_summary["prompt_files"],
+            status="completed",
+        )
+        _check_for_manual_override(run_context, current_stage)
+
+        current_stage = "send"
+        if send:
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="뉴스 전용 발송을 시작합니다.",
+                channel_overrides=channel_overrides or {},
+            )
+            send_results = send_all(contents, channel_overrides=channel_overrides)
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="뉴스 전용 발송이 완료되었습니다.",
+                send_results=send_results,
+                status="completed",
+            )
+        else:
+            send_results = {
+                "skipped": True,
+                "detail": "dry-run mode: 발송을 건너뛰었습니다.",
+            }
+            _emit_progress(
+                progress_callback,
+                stage="send",
+                message="dry-run 모드로 뉴스 전용 발송을 건너뛰었습니다.",
+                status="skipped",
+            )
+
+        duration_sec = round(time.perf_counter() - started_perf, 2)
+        result = {
+            "success": True,
+            "started_at": started_at,
+            "completed_at": _now_text(),
+            "duration_sec": duration_sec,
+            "send_enabled": send,
+            "trigger": trigger,
+            "run_mode": "news_only",
+            "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
+            "news_summary": news_summary,
+            "contents_summary": contents_summary,
+            "prompt_files": contents.get("prompt_files", {}),
+            "artifact_files": _collect_prompt_artifact_files(contents),
+            "send_results": send_results,
+        }
+        _emit_progress(
+            progress_callback,
+            stage="done",
+            message="뉴스 전용 파이프라인이 정상 종료되었습니다.",
+            duration_sec=duration_sec,
+            status="completed",
+        )
+        return result
+    except PipelineOverrideRequested as exc:
+        duration_sec = round(time.perf_counter() - started_perf, 2)
+        _emit_progress(
+            progress_callback,
+            stage=current_stage,
+            message="다른 실행이 진행 중이라 이번 뉴스 전용 요청을 건너뜁니다.",
+            status="skipped",
+            duration_sec=duration_sec,
+            reason=str(exc),
+        )
+        return {
+            "success": True,
+            "skipped": True,
+            "started_at": started_at,
+            "completed_at": _now_text(),
+            "duration_sec": duration_sec,
+            "failed_stage": current_stage,
+            "reason": str(exc),
+            "send_enabled": send,
+            "trigger": trigger,
+            "run_mode": "news_only",
+            "channel_overrides": channel_overrides or {},
+            "llm_overrides": llm_overrides or {},
+        }
+    except Exception as exc:
+        duration_sec = round(time.perf_counter() - started_perf, 2)
+        _emit_progress(
+            progress_callback,
+            stage=current_stage,
+            message="뉴스 전용 파이프라인이 실패했습니다.",
+            status="failed",
+            duration_sec=duration_sec,
+            error=str(exc),
+        )
+        return {
+            "success": False,
+            "started_at": started_at,
+            "completed_at": _now_text(),
+            "duration_sec": duration_sec,
+            "failed_stage": current_stage,
+            "error": str(exc),
+            "send_enabled": send,
+            "trigger": trigger,
+            "run_mode": "news_only",
             "channel_overrides": channel_overrides or {},
             "llm_overrides": llm_overrides or {},
         }

@@ -276,11 +276,20 @@ def send_all(
     sms_message = contents.get("sms_message") or contents.get("alimtalk_message")
     instagram_caption = contents.get("instagram_caption")
     channel_overrides = channel_overrides or {}
+    telegram_enabled = _resolve_channel_enabled(channel_overrides.get("telegram"), SEND_TELEGRAM_ENABLED)
+    sms_enabled = _resolve_channel_enabled(channel_overrides.get("sms"), SEND_SMS_ENABLED)
+    instagram_enabled = _resolve_channel_enabled(channel_overrides.get("instagram"), SEND_INSTAGRAM_ENABLED)
 
     results = {
-        "telegram": _build_result(False, "telegram_report 가 비어 있습니다."),
-        "sms": _build_result(False, "alimtalk_message 또는 sms_message 가 비어 있습니다."),
-        "instagram": _build_result(False, "instagram_caption 이 비어 있습니다."),
+        "telegram": _build_skipped_result("이번 실행 설정으로 텔레그램 발송을 건너뜁니다.")
+        if not telegram_enabled
+        else _build_result(False, "telegram_report 가 비어 있습니다."),
+        "sms": _build_skipped_result("이번 실행 설정으로 SMS 발송을 건너뜁니다.")
+        if not sms_enabled
+        else _build_result(False, "alimtalk_message 또는 sms_message 가 비어 있습니다."),
+        "instagram": _build_skipped_result("이번 실행 설정으로 인스타그램 업로드를 건너뜁니다.")
+        if not instagram_enabled
+        else _build_result(False, "instagram_caption 이 비어 있습니다."),
     }
 
     if telegram_message:

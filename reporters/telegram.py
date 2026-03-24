@@ -100,6 +100,36 @@ def fallback_telegram_report(
     return "\n".join(lines)
 
 
+def fallback_news_only_telegram_report(
+    news: list[dict],
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
+) -> str:
+    effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    news_lines = news[:effective_news_limit]
+    lines = [
+        "[부동산 뉴스 브리핑]",
+        "",
+        f"- 수집 기사 수: {len(news_lines)}건",
+        "",
+        "1. 주요 뉴스",
+    ]
+
+    if news_lines:
+        lines.extend(f"- {format_news_item(article)}" for article in news_lines)
+    else:
+        lines.append("- 주요 뉴스 없음")
+
+    lines.extend(
+        [
+            "",
+            "2. 한줄 정리",
+            "- 오늘은 뉴스만 빠르게 정리한 별도 발송입니다.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def build_telegram_report_prompt(
     analysis: dict,
     news: list[dict],
@@ -122,6 +152,25 @@ def build_telegram_report_prompt(
     return system, prompt
 
 
+def build_news_only_telegram_prompt(
+    news: list[dict],
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
+) -> tuple[str, str]:
+    effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    news_context = "\n".join(f"- {format_news_item(article)}" for article in news[:effective_news_limit]) or "- 주요 뉴스 없음"
+    prompt = (
+        "아래 데이터를 기반으로 텔레그램용 한국어 부동산 뉴스 브리핑을 작성해줘.\n"
+        "- 구조는 제목, 주요 뉴스, 한줄 정리 순서\n"
+        f"- 주요 뉴스는 최대 {effective_news_limit}건까지만 반영\n"
+        "- 기사 제목, 언론사, 링크를 빠짐없이 반영\n"
+        "- 제공된 기사만 사용하고 과장하지 말 것\n\n"
+        f"[주요 뉴스]\n{news_context}"
+    )
+    system = "너는 한국 부동산 뉴스 브리핑 에디터다. 제공된 기사만 사용해 텔레그램용 요약을 작성해라."
+    return system, prompt
+
+
 def generate_telegram_report(
     analysis: dict,
     news: list[dict],
@@ -136,4 +185,14 @@ def generate_telegram_report(
         transactions,
         max_news_items=max_news_items,
     )
+    return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+
+
+def generate_news_only_telegram_report(
+    news: list[dict],
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
+) -> str:
+    fallback = fallback_news_only_telegram_report(news, max_news_items=max_news_items)
+    system, prompt = build_news_only_telegram_prompt(news, max_news_items=max_news_items)
     return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)

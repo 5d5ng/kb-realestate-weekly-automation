@@ -11,7 +11,12 @@ from reporters.cardnews import generate_card_news_script
 from reporters.cardnews import build_card_news_prompt
 from reporters.common import generation_override_context, get_generation_plan, save_prompt_file
 from reporters.instagram import build_instagram_caption_prompt, generate_instagram_caption
-from reporters.telegram import build_telegram_report_prompt, generate_telegram_report
+from reporters.telegram import (
+    build_news_only_telegram_prompt,
+    build_telegram_report_prompt,
+    generate_news_only_telegram_report,
+    generate_telegram_report,
+)
 
 
 def export_prompt_files(
@@ -66,4 +71,34 @@ def generate_all_contents(
                 transactions,
                 telegram_news_limit=telegram_news_limit,
             ),
+        }
+
+
+def generate_news_only_contents(
+    news: list[dict],
+    llm_overrides: dict | None = None,
+    *,
+    telegram_news_limit: int = 30,
+) -> dict:
+    with generation_override_context(llm_overrides):
+        telegram_system, telegram_prompt = build_news_only_telegram_prompt(
+            news,
+            max_news_items=telegram_news_limit,
+        )
+        telegram_report = generate_news_only_telegram_report(
+            news,
+            max_news_items=telegram_news_limit,
+        )
+        return {
+            "telegram_report": telegram_report,
+            "sms_message": telegram_report,
+            "generation_plan": get_generation_plan(),
+            "prompt_files": {
+                "telegram_report": save_prompt_file(
+                    "telegram_report",
+                    telegram_system,
+                    telegram_prompt,
+                    fallback_text=telegram_report,
+                )
+            },
         }

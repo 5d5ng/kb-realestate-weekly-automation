@@ -14,7 +14,7 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 from db_backend import get_database_backend_snapshot
 from news import get_news_config_snapshot
 from reporters.common import get_generation_plan, get_llm_config_snapshot
-from scheduler import init_scheduler, run_pipeline
+from scheduler import init_scheduler, run_news_only_pipeline, run_pipeline
 from sender import (
     SEND_INSTAGRAM_ENABLED,
     SEND_SMS_ENABLED,
@@ -828,6 +828,64 @@ INDEX_TEMPLATE = """
           <button type="submit" class="secondary">실제 발송 실행</button>
         </div>
       </form>
+
+      <form class="card" id="news-only-form">
+        <span class="badge">빠른 발송</span>
+        <h2>뉴스만 발송</h2>
+        <p>실거래와 분석을 건너뛰고 뉴스만 수집해서 바로 발송합니다. 실거래 단계가 오래 걸릴 때 빠르게 쓰기 좋습니다.</p>
+
+        <label for="news-only-days">뉴스 수집 기간</label>
+        <input id="news-only-days" name="news_days" type="number" min="1" value="1">
+
+        <label for="news-only-max">최대 뉴스 수</label>
+        <input id="news-only-max" name="news_max_articles" type="number" min="1" value="5">
+
+        <label>LLM 사용</label>
+        <div class="llm-list">
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="llm_telegram_report"
+              {% if default_llm_tasks['telegram_report'] %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">텔레그램 리포트</span>
+              <span class="channel-desc">뉴스 전용 텔레그램 브리핑 문안을 LLM으로 다듬습니다.</span>
+            </span>
+          </label>
+        </div>
+
+        <label>발송 플랫폼</label>
+        <div class="channel-list">
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_telegram"
+              {% if default_channels.telegram %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">텔레그램</span>
+              <span class="channel-desc">뉴스 브리핑을 텔레그램으로 바로 전송합니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_sms"
+              {% if default_channels.sms %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">SMS / 알림 메시지</span>
+              <span class="channel-desc">뉴스 브리핑 문안을 솔라피로 발송합니다.</span>
+            </span>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="secondary">뉴스만 발송 실행</button>
+        </div>
+      </form>
     </section>
 
     <p class="hint">
@@ -1063,10 +1121,11 @@ INDEX_TEMPLATE = """
       }).join("");
     }
 
-    function buildPayload(form, send) {
+    function buildPayload(form, send, runMode = "full") {
       const formData = new FormData(form);
       const data = Object.fromEntries(formData.entries());
       data.send = send;
+      data.run_mode = runMode;
 
       if (send) {
         data.send_telegram = form.querySelector('input[name="send_telegram"]')?.checked || false;
@@ -1319,10 +1378,10 @@ INDEX_TEMPLATE = """
       }
     }
 
-    async function submitForm(form, send) {
+    async function submitForm(form, send, runMode = "full") {
       const progressEl = document.getElementById("progress");
       const resultEl = document.getElementById("result");
-      const data = buildPayload(form, send);
+      const data = buildPayload(form, send, runMode);
 
       if (activePoller) {
         clearInterval(activePoller);
@@ -1370,6 +1429,7 @@ INDEX_TEMPLATE = """
             run_id: payload.run_id,
             status: payload.status,
             detail: payload.detail,
+            run_mode: runMode,
           },
           null,
           2
@@ -1418,14 +1478,21 @@ INDEX_TEMPLATE = """
 
     document.getElementById("dry-run-form").addEventListener("submit", function (event) {
       event.preventDefault();
-      submitForm(event.currentTarget, false);
+      submitForm(event.currentTarget, false, "full");
     });
 
     document.getElementById("send-form").addEventListener("submit", function (event) {
       event.preventDefault();
       const ok = window.confirm("체크한 플랫폼으로 실제 발송을 진행할까요?");
       if (!ok) return;
-      submitForm(event.currentTarget, true);
+      submitForm(event.currentTarget, true, "full");
+    });
+
+    document.getElementById("news-only-form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      const ok = window.confirm("뉴스만 수집해서 선택한 플랫폼으로 발송할까요?");
+      if (!ok) return;
+      submitForm(event.currentTarget, true, "news_only");
     });
     document.getElementById("attach-run-button").addEventListener("click", function () {
       const runId = document.getElementById("attach-run-id").value.trim();
@@ -1480,6 +1547,9 @@ def _parse_int(value: object, default: int) -> int:
 
 
 def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_mode = str(payload.get("run_mode") or "full").strip().lower()
+    if run_mode not in {"full", "news_only"}:
+        run_mode = "full"
     send = _parse_bool(payload.get("send"), default=False)
     news_days = _parse_int(payload.get("news_days"), default=1)
     news_max_articles = _parse_int(payload.get("news_max_articles"), default=5)
@@ -1487,7 +1557,7 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     channel_overrides = {
         "telegram": _parse_bool(payload.get("send_telegram"), default=False),
         "sms": _parse_bool(payload.get("send_sms"), default=False),
-        "instagram": _parse_bool(payload.get("send_instagram"), default=False),
+        "instagram": _parse_bool(payload.get("send_instagram"), default=False) if run_mode == "full" else False,
     }
     llm_overrides = {
         "telegram_report": _parse_bool(payload.get("llm_telegram_report"), default=True),
@@ -1495,6 +1565,7 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "card_news_script": _parse_bool(payload.get("llm_card_news_script"), default=True),
     }
     return {
+        "run_mode": run_mode,
         "send": send,
         "news_days": news_days,
         "news_max_articles": news_max_articles,
@@ -1583,16 +1654,27 @@ def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
             return
         state["status"] = "running"
 
-    result = run_pipeline(
-        send=options["send"],
-        trigger="manual",
-        news_days=options["news_days"],
-        news_max_articles=options["news_max_articles"],
-        transaction_limit=options["transaction_limit"],
-        channel_overrides=options["channel_overrides"],
-        llm_overrides=options.get("llm_overrides"),
-        progress_callback=progress_callback,
-    )
+    if options.get("run_mode") == "news_only":
+        result = run_news_only_pipeline(
+            send=options["send"],
+            trigger="manual",
+            news_days=options["news_days"],
+            news_max_articles=options["news_max_articles"],
+            channel_overrides=options["channel_overrides"],
+            llm_overrides=options.get("llm_overrides"),
+            progress_callback=progress_callback,
+        )
+    else:
+        result = run_pipeline(
+            send=options["send"],
+            trigger="manual",
+            news_days=options["news_days"],
+            news_max_articles=options["news_max_articles"],
+            transaction_limit=options["transaction_limit"],
+            channel_overrides=options["channel_overrides"],
+            llm_overrides=options.get("llm_overrides"),
+            progress_callback=progress_callback,
+        )
 
     final_status = "completed" if result.get("success") and not result.get("skipped") else "failed"
     if result.get("skipped"):
@@ -1638,6 +1720,7 @@ def _start_background_run(options: dict[str, Any]) -> dict[str, Any]:
                     "message": "실행 요청이 등록되었습니다.",
                     "extra": {
                         "send": options["send"],
+                        "run_mode": options.get("run_mode", "full"),
                         "channel_overrides": options.get("channel_overrides") or {},
                         "llm_overrides": options.get("llm_overrides") or {},
                     },
@@ -1681,15 +1764,25 @@ def run_manual():
     payload = request.get_json(silent=True) or request.form.to_dict() or {}
     options = _parse_run_payload(payload)
 
-    result = run_pipeline(
-        send=options["send"],
-        trigger="manual",
-        news_days=options["news_days"],
-        news_max_articles=options["news_max_articles"],
-        transaction_limit=options["transaction_limit"],
-        channel_overrides=options["channel_overrides"],
-        llm_overrides=options.get("llm_overrides"),
-    )
+    if options.get("run_mode") == "news_only":
+        result = run_news_only_pipeline(
+            send=options["send"],
+            trigger="manual",
+            news_days=options["news_days"],
+            news_max_articles=options["news_max_articles"],
+            channel_overrides=options["channel_overrides"],
+            llm_overrides=options.get("llm_overrides"),
+        )
+    else:
+        result = run_pipeline(
+            send=options["send"],
+            trigger="manual",
+            news_days=options["news_days"],
+            news_max_articles=options["news_max_articles"],
+            transaction_limit=options["transaction_limit"],
+            channel_overrides=options["channel_overrides"],
+            llm_overrides=options.get("llm_overrides"),
+        )
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
 
