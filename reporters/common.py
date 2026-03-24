@@ -185,6 +185,43 @@ def format_region_bucket(items: list[dict[str, Any]], limit: int = 5) -> str:
     return ", ".join(format_region_item(item) for item in items[:limit])
 
 
+def _make_url_placeholder(index: int) -> str:
+    return f"URL_REF_{index}"
+
+
+def protect_article_urls(prompt: str, articles: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """Replace article URLs in prompt with numbered placeholders.
+
+    Returns the protected prompt and a list of original URLs indexed from 0.
+    The LLM will preserve placeholders verbatim, preventing URL corruption.
+    """
+    original_urls: list[str] = []
+    protected = prompt
+    for i, article in enumerate(articles):
+        url = (
+            article.get("url")
+            or article.get("resolved_url")
+            or article.get("originallink")
+            or article.get("link")
+            or ""
+        )
+        original_urls.append(url)
+        if url:
+            placeholder = _make_url_placeholder(i + 1)
+            protected = protected.replace(url, placeholder)
+    return protected, original_urls
+
+
+def restore_article_urls(text: str, original_urls: list[str]) -> str:
+    """Replace numbered URL placeholders back with original URLs."""
+    result = text
+    for i, url in enumerate(original_urls):
+        if url:
+            placeholder = _make_url_placeholder(i + 1)
+            result = result.replace(placeholder, url)
+    return result
+
+
 def format_news_item(article: dict[str, Any]) -> str:
     publisher = article.get("publisher", "언론사")
     issue_date = article.get("issue_date") or article.get("published_at", "")

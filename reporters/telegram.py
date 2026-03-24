@@ -9,6 +9,8 @@ from .common import (
     format_region_bucket,
     format_trade_item,
     generate_with_llm,
+    protect_article_urls,
+    restore_article_urls,
 )
 
 MAX_TELEGRAM_NEWS_ITEMS = 30
@@ -286,6 +288,8 @@ def generate_telegram_report(
     *,
     max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> str:
+    effective_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    capped_news = news[:effective_limit]
     fallback = fallback_telegram_report(analysis, news, transactions, max_news_items=max_news_items)
     system, prompt = build_telegram_report_prompt(
         analysis,
@@ -293,7 +297,9 @@ def generate_telegram_report(
         transactions,
         max_news_items=max_news_items,
     )
-    generated = generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    protected_prompt, original_urls = protect_article_urls(prompt, capped_news)
+    generated = generate_with_llm("telegram_report", system, protected_prompt, fallback_text=fallback)
+    generated = restore_article_urls(generated, original_urls)
     return _normalize_telegram_newsletter(generated)
 
 
@@ -302,7 +308,11 @@ def generate_news_only_telegram_report(
     *,
     max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> str:
+    effective_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    capped_news = news[:effective_limit]
     fallback = fallback_news_only_telegram_report(news, max_news_items=max_news_items)
     system, prompt = build_news_only_telegram_prompt(news, max_news_items=max_news_items)
-    generated = generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
+    protected_prompt, original_urls = protect_article_urls(prompt, capped_news)
+    generated = generate_with_llm("telegram_report", system, protected_prompt, fallback_text=fallback)
+    generated = restore_article_urls(generated, original_urls)
     return _normalize_telegram_newsletter(generated)
