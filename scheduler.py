@@ -260,7 +260,7 @@ def _summarize_transactions(transactions: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _summarize_news(news: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize_news(news: list[dict[str, Any]], *, max_titles: int = 5) -> dict[str, Any]:
     publisher_counts: dict[str, int] = {}
     for article in news:
         publisher = article.get("publisher", "unknown")
@@ -269,7 +269,7 @@ def _summarize_news(news: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "count": len(news),
         "publishers": publisher_counts,
-        "top_titles": [article.get("title", "") for article in news[:3]],
+        "top_titles": [article.get("title", "") for article in news[: max(1, max_titles)]],
     }
 
 
@@ -480,7 +480,7 @@ def run_pipeline(
             news_max_articles=news_max_articles,
         )
         news = get_weekly_news(days=news_days, max_articles=news_max_articles)
-        news_summary = _summarize_news(news)
+        news_summary = _summarize_news(news, max_titles=min(max(1, news_max_articles), 10))
         _log(f"뉴스 수집 완료 | count={news_summary['count']}")
         _emit_progress(
             progress_callback,
@@ -493,7 +493,13 @@ def run_pipeline(
 
         current_stage = "contents"
         _emit_progress(progress_callback, stage="contents", message="콘텐츠 생성을 시작합니다.")
-        contents = generate_all_contents(analysis, news, transactions, llm_overrides=llm_overrides)
+        contents = generate_all_contents(
+            analysis,
+            news,
+            transactions,
+            llm_overrides=llm_overrides,
+            telegram_news_limit=min(max(1, news_max_articles), 30),
+        )
         contents_summary = _summarize_contents(contents)
         _log(
             "콘텐츠 생성 완료 "

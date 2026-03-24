@@ -9,6 +9,8 @@ from .common import (
     generate_with_llm,
 )
 
+MAX_TELEGRAM_NEWS_ITEMS = 30
+
 
 def _format_transaction_highlights(
     transactions: dict | None,
@@ -52,11 +54,18 @@ def _format_transaction_highlights(
     return lines or ["- 실거래 정보 없음"]
 
 
-def fallback_telegram_report(analysis: dict, news: list[dict], transactions: dict | None = None) -> str:
+def fallback_telegram_report(
+    analysis: dict,
+    news: list[dict],
+    transactions: dict | None = None,
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
+) -> str:
     latest_date = analysis.get("latest_date", "")
     sale = analysis.get("sale", {})
     rent = analysis.get("rent", {})
-    news_lines = news[:3]
+    effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    news_lines = news[:effective_news_limit]
     transaction_lines = _format_transaction_highlights(transactions)
 
     lines = [
@@ -95,15 +104,19 @@ def build_telegram_report_prompt(
     analysis: dict,
     news: list[dict],
     transactions: dict | None = None,
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> tuple[str, str]:
+    effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
     prompt = (
         "아래 데이터를 기반으로 텔레그램용 한국어 주간 부동산 리포트를 작성해줘.\n"
         "- 문체는 전문적이되 이해하기 쉽게\n"
         "- 반드시 데이터에 있는 내용만 사용\n"
         "- 구조는 제목, 매매 흐름, 전세 흐름, 실거래 체크, 주요 뉴스, 한줄 시사점 순서\n"
         "- 실거래 체크에서는 최근 거래 단지명, 면적, 가격, 최근 전세 흐름을 짧게 요약\n"
+        f"- 주요 뉴스는 최대 {effective_news_limit}건까지만 반영\n"
         "- 마크다운 친화적으로 작성\n\n"
-        f"{build_context(analysis, news, transactions)}"
+        f"{build_context(analysis, news[:effective_news_limit], transactions)}"
     )
     system = "너는 한국 부동산 시장 콘텐츠 에디터다. 없는 수치나 사실을 만들지 말고 제공된 데이터만 사용해라."
     return system, prompt
@@ -113,7 +126,14 @@ def generate_telegram_report(
     analysis: dict,
     news: list[dict],
     transactions: dict | None = None,
+    *,
+    max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> str:
-    fallback = fallback_telegram_report(analysis, news, transactions)
-    system, prompt = build_telegram_report_prompt(analysis, news, transactions)
+    fallback = fallback_telegram_report(analysis, news, transactions, max_news_items=max_news_items)
+    system, prompt = build_telegram_report_prompt(
+        analysis,
+        news,
+        transactions,
+        max_news_items=max_news_items,
+    )
     return generate_with_llm("telegram_report", system, prompt, fallback_text=fallback)
