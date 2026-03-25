@@ -483,6 +483,19 @@ def save_prompt_file(
     return str(output_path)
 
 
+def save_llm_raw_response(task_name: str, raw_text: str) -> str:
+    """LLM이 반환한 원문(post-processing 전)을 파일로 저장."""
+    PROMPT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = PROMPT_OUTPUT_DIR / f"{task_name}_raw_response.txt"
+    sections = [
+        f"[task]\n{task_name}",
+        f"[saved_at]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"[raw_llm_output]\n{raw_text.strip()}",
+    ]
+    output_path.write_text("\n\n".join(sections).strip() + "\n", encoding="utf-8")
+    return str(output_path)
+
+
 def _extract_openai_text(payload: dict[str, Any]) -> str:
     text = clean_text(payload.get("output_text"))
     if text:
@@ -651,6 +664,7 @@ def generate_with_llm(
         return fallback_text
 
     if generated_text:
+        save_llm_raw_response(task_name, generated_text)
         _record_generation_meta(
             task_name,
             provider=provider,
@@ -677,6 +691,7 @@ def generate_with_llm(
             backup_text = _call_anthropic(backup_model, system_prompt, user_prompt, max_tokens=backup_max_tokens)
 
         if backup_text:
+            save_llm_raw_response(task_name, backup_text)
             _record_generation_meta(
                 task_name,
                 provider=backup_provider,

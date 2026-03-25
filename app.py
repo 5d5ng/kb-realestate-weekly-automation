@@ -1066,6 +1066,7 @@ INDEX_TEMPLATE = """
         <div class="actions">
           <button id="copy-current-prompt" type="button" class="secondary">현재 프롬프트 복사</button>
           <a id="download-current-prompt" href="/run/prompt/latest/download" class="secondary" style="display:inline-block;padding:6px 14px;border:1px solid #ccc;border-radius:4px;text-decoration:none;font-size:0.9em;">최근 프롬프트 다운로드</a>
+          <a id="download-raw-response" href="/run/prompt/latest/raw/download" class="secondary" style="display:inline-block;padding:6px 14px;border:1px solid #ccc;border-radius:4px;text-decoration:none;font-size:0.9em;">LLM 원문 응답 다운로드</a>
         </div>
         <div id="prompt-copy-status" class="copy-status"></div>
         <pre id="prompt-viewer" class="json-block">아직 실행된 프롬프트가 없습니다.</pre>
@@ -2054,6 +2055,14 @@ def download_latest_prompt():
     if not path.exists():
         return jsonify({"success": False, "error": "저장된 프롬프트 파일이 없습니다."}), 404
     return send_file(path.resolve(), as_attachment=True, download_name="telegram_report_prompt.txt")
+
+
+@app.route("/run/prompt/latest/raw/download", methods=["GET"])
+def download_latest_raw_response():
+    path = Path("reports/prompts/telegram_report_raw_response.txt")
+    if not path.exists():
+        return jsonify({"success": False, "error": "저장된 LLM 응답 파일이 없습니다. 먼저 파이프라인을 실행하세요."}), 404
+    return send_file(path.resolve(), as_attachment=True, download_name="telegram_report_raw_response.txt")
 
 
 @app.route("/run/artifacts/<run_id>", methods=["GET"])
