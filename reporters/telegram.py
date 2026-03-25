@@ -243,13 +243,14 @@ def build_telegram_report_prompt(
     max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> tuple[str, str]:
     effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
+    actual_news_count = len(news[:effective_news_limit])
     prompt = (
         "아래 데이터를 기반으로 텔레그램용 한국어 주간 부동산 리포트를 작성해줘.\n"
         "- 문체는 전문적이되 이해하기 쉽게\n"
         "- 반드시 데이터에 있는 내용만 사용\n"
         "- 구조는 제목, 매매 흐름, 전세 흐름, 실거래 체크, 주요 뉴스, 한줄 시사점 순서\n"
         "- 실거래 체크에서는 최근 거래 단지명, 면적, 가격, 최근 전세 흐름을 짧게 요약\n"
-        f"- 주요 뉴스는 아래 제공된 {effective_news_limit}건만 반영 (없는 기사를 추가로 만들거나 URL을 지어내는 것 절대 금지)\n"
+        f"- 주요 뉴스는 아래 제공된 {actual_news_count}건만 반영 (없는 기사를 추가로 만들거나 URL을 지어내는 것 절대 금지)\n"
         "- 일반 텍스트 뉴스레터 형식으로 작성\n"
         "- Markdown 문법(#, ##, *, **, [], ()) 사용 금지\n"
         "- 섹션 제목은 [매매 흐름], [전세 흐름], [실거래 체크], [주요 뉴스], [한줄 시사점]처럼 한 줄로 작성\n"
@@ -267,11 +268,13 @@ def build_news_only_telegram_prompt(
     max_news_items: int = MAX_TELEGRAM_NEWS_ITEMS,
 ) -> tuple[str, str]:
     effective_news_limit = max(0, min(int(max_news_items), MAX_TELEGRAM_NEWS_ITEMS))
-    news_context = "\n".join(f"- {format_news_item(article)}" for article in news[:effective_news_limit]) or "- 주요 뉴스 없음"
+    capped = news[:effective_news_limit]
+    news_context = "\n".join(f"- {format_news_item(article)}" for article in capped) or "- 주요 뉴스 없음"
+    actual_news_count = len(capped)
     prompt = (
         "아래 데이터를 기반으로 텔레그램용 한국어 부동산 뉴스 브리핑을 작성해줘.\n"
         "- 구조는 제목, 주요 뉴스, 한줄 정리 순서\n"
-        f"- 주요 뉴스는 아래 제공된 {effective_news_limit}건만 반영 (없는 기사를 추가로 만들거나 URL을 지어내는 것 절대 금지)\n"
+        f"- 주요 뉴스는 아래 제공된 {actual_news_count}건만 반영 (없는 기사를 추가로 만들거나 URL을 지어내는 것 절대 금지)\n"
         "- 기사 제목, 언론사, 링크를 빠짐없이 반영\n"
         "- 일반 텍스트 뉴스레터 형식으로 작성\n"
         "- Markdown 문법(#, ##, *, **, [], ()) 사용 금지\n"
