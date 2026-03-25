@@ -213,9 +213,14 @@ def protect_article_urls(prompt: str, articles: list[dict[str, Any]]) -> tuple[s
 
 
 def restore_article_urls(text: str, original_urls: list[str]) -> str:
-    """Replace numbered URL placeholders back with original URLs."""
+    """Replace numbered URL placeholders back with original URLs.
+
+    Iterates in reverse index order so that e.g. URL_REF_10 is replaced
+    before URL_REF_1, preventing URL_REF_1 from matching inside URL_REF_10
+    and producing a corrupted URL.
+    """
     result = text
-    for i, url in enumerate(original_urls):
+    for i, url in reversed(list(enumerate(original_urls))):
         if url:
             placeholder = _make_url_placeholder(i + 1)
             result = result.replace(placeholder, url)
@@ -237,7 +242,7 @@ def filter_hallucinated_news_articles(text: str, allowed_urls: list[str]) -> str
         return text
 
     news_match = re.search(
-        r"(\[주요 뉴스\]\n)(.*?)(?=\n\[[^\]]+\]|\Z)",
+        r"(\[주요 뉴스\]\n+)(.*?)(?=\n\[[^\]]+\]|\Z)",
         text,
         flags=re.DOTALL,
     )
