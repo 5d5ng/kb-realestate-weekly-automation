@@ -222,6 +222,55 @@ def restore_article_urls(text: str, original_urls: list[str]) -> str:
     return result
 
 
+def filter_hallucinated_news_articles(text: str, allowed_urls: list[str]) -> str:
+    """Remove news article blocks whose link URL is not in the allowed set.
+
+    After LLM generation and URL restoration, any article block containing a
+    ``링크:`` line with a URL that is not in *allowed_urls* is considered
+    hallucinated and is stripped from the output.  Remaining articles are
+    renumbered sequentially.
+    """
+    import re
+
+    allowed_set = {url for url in (allowed_urls or []) if url}
+    if not allowed_set:
+        return text
+
+    news_match = re.search(
+        r"(\[주요 뉴스\]\n)(.*?)(?=\n\[[^\]]+\]|\Z)",
+        text,
+        flags=re.DOTALL,
+    )
+    if not news_match:
+        return text
+
+    header = news_match.group(1)
+    block = news_match.group(2)
+
+    # Split into per-article chunks (each starts with a numbered index).
+    raw_articles = re.split(r"\n\n(?=\d+\.)", block)
+
+    filtered: list[str] = []
+    new_index = 1
+    for chunk in raw_articles:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        url_match = re.search(r"링크:\s+(https?://\S+)", chunk)
+        if url_match:
+            url = url_match.group(1).strip()
+            if url not in allowed_set:
+                # Hallucinated article – discard.
+                continue
+        # Renumber the leading index.
+        renumbered = re.sub(r"^\d+\.", f"{new_index}.", chunk, count=1)
+        filtered.append(renumbered)
+        new_index += 1
+
+    new_block = "\n\n".join(filtered)
+    return text[: news_match.start()] + header + new_block + text[news_match.end() :]
+
+
 def format_news_item(article: dict[str, Any]) -> str:
     publisher = article.get("publisher", "언론사")
     issue_date = article.get("issue_date") or article.get("published_at", "")

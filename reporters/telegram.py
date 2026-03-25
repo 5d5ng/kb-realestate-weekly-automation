@@ -5,6 +5,7 @@ import re
 from .common import (
     BUCKET_LABELS,
     build_context,
+    filter_hallucinated_news_articles,
     format_news_item,
     format_region_bucket,
     format_trade_item,
@@ -302,7 +303,9 @@ def generate_telegram_report(
     protected_prompt, original_urls = protect_article_urls(prompt, capped_news)
     generated = generate_with_llm("telegram_report", system, protected_prompt, fallback_text=fallback)
     generated = restore_article_urls(generated, original_urls)
-    return _normalize_telegram_newsletter(generated)
+    generated = _normalize_telegram_newsletter(generated)
+    generated = filter_hallucinated_news_articles(generated, original_urls)
+    return generated
 
 
 def generate_news_only_telegram_report(
@@ -317,4 +320,6 @@ def generate_news_only_telegram_report(
     protected_prompt, original_urls = protect_article_urls(prompt, capped_news)
     generated = generate_with_llm("telegram_report", system, protected_prompt, fallback_text=fallback)
     generated = restore_article_urls(generated, original_urls)
-    return _normalize_telegram_newsletter(generated)
+    generated = _normalize_telegram_newsletter(generated)
+    generated = filter_hallucinated_news_articles(generated, original_urls)
+    return generated
