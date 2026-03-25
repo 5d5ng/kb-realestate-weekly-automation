@@ -212,6 +212,26 @@ def _is_naver_news_url(url: str) -> bool:
     return hostname.endswith("news.naver.com") or hostname.endswith("n.news.naver.com")
 
 
+_NEWSPAPER_URL_RE = re.compile(
+    r"https?://n\.news\.naver\.com/article/newspaper/(\d+)/(\d+)"
+)
+
+
+def _normalize_newspaper_url(url: str) -> str:
+    """
+    네이버 신문보기 전용 URL을 표준 뉴스 URL로 변환한다.
+
+    /article/newspaper/{press}/{id}?date=YYYYMMMDDX 형태는
+    신문 뷰어 컨텍스트 안에서만 유효하므로,
+    일반 접근 가능한 /mnews/article/{press}/{id} 형태로 교정한다.
+    """
+    m = _NEWSPAPER_URL_RE.match(url)
+    if not m:
+        return url
+    press, article_id = m.group(1), m.group(2)
+    return f"https://n.news.naver.com/mnews/article/{press}/{article_id}"
+
+
 def _extract_naver_sid(url: str) -> str:
     if not url:
         return ""
@@ -414,7 +434,7 @@ def _parse_newspaper_issue(press_code: str, issue_date: datetime) -> list[dict[s
         page = _clean_text(page_node.get_text(" ", strip=True) if page_node else "")
 
         for link in wrapper.select(".newspaper_article_lst a[href]"):
-            href = _clean_text(link.get("href"))
+            href = _normalize_newspaper_url(_clean_text(link.get("href")))
             title_node = link.select_one("strong")
             description_node = link.select_one("p")
 
