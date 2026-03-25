@@ -247,8 +247,8 @@ def filter_hallucinated_news_articles(text: str, allowed_urls: list[str]) -> str
     header = news_match.group(1)
     block = news_match.group(2)
 
-    # Split into per-article chunks (each starts with a numbered index).
-    raw_articles = re.split(r"\n\n(?=\d+\.)", block)
+    # Split into per-article chunks on any blank line.
+    raw_articles = re.split(r"\n{2,}", block)
 
     filtered: list[str] = []
     new_index = 1
