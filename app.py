@@ -1065,6 +1065,7 @@ INDEX_TEMPLATE = """
         </div>
         <div class="actions">
           <button id="copy-current-prompt" type="button" class="secondary">현재 프롬프트 복사</button>
+          <a id="download-current-prompt" href="/run/prompt/latest/download" class="secondary" style="display:inline-block;padding:6px 14px;border:1px solid #ccc;border-radius:4px;text-decoration:none;font-size:0.9em;">최근 프롬프트 다운로드</a>
         </div>
         <div id="prompt-copy-status" class="copy-status"></div>
         <pre id="prompt-viewer" class="json-block">아직 실행된 프롬프트가 없습니다.</pre>
@@ -2025,6 +2026,34 @@ def test_telegram():
     result = send_telegram(message, enabled=True)
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
+
+
+@app.route("/run/prompt/<run_id>/<task_name>/download", methods=["GET"])
+def download_prompt(run_id: str, task_name: str):
+    with RUN_STATE_LOCK:
+        state = RUN_STATE.get(run_id)
+        if not state:
+            return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
+        result = state.get("result") or {}
+        prompt_files = result.get("prompt_files") or {}
+        prompt_path = prompt_files.get(task_name)
+
+    if not prompt_path:
+        return jsonify({"success": False, "error": "해당 실행에서 생성된 프롬프트를 찾을 수 없습니다."}), 404
+
+    path = Path(prompt_path)
+    if not path.exists():
+        return jsonify({"success": False, "error": "프롬프트 파일을 찾을 수 없습니다."}), 404
+
+    return send_file(path, as_attachment=True, download_name=f"{task_name}_prompt.txt")
+
+
+@app.route("/run/prompt/latest/download", methods=["GET"])
+def download_latest_prompt():
+    path = Path("reports/prompts/telegram_report_prompt.txt")
+    if not path.exists():
+        return jsonify({"success": False, "error": "저장된 프롬프트 파일이 없습니다."}), 404
+    return send_file(path.resolve(), as_attachment=True, download_name="telegram_report_prompt.txt")
 
 
 @app.route("/run/artifacts/<run_id>", methods=["GET"])
