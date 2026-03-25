@@ -30,7 +30,7 @@ def export_prompt_files(
     news: list[dict],
     transactions: dict | None = None,
     *,
-    telegram_news_limit: int = 30,
+    telegram_news_limit: int = 50,
 ) -> dict[str, str]:
     telegram_system, telegram_prompt = build_telegram_report_prompt(
         analysis,
@@ -56,7 +56,7 @@ def generate_all_contents(
     transactions: dict | None = None,
     llm_overrides: dict | None = None,
     *,
-    telegram_news_limit: int = 30,
+    telegram_news_limit: int = 50,
 ) -> dict:
     """4종 콘텐츠 일괄 생성 + 검토용 프롬프트 파일 저장"""
     with generation_override_context(llm_overrides):
@@ -87,7 +87,7 @@ def generate_news_only_contents(
     news: list[dict],
     llm_overrides: dict | None = None,
     *,
-    telegram_news_limit: int = 30,
+    telegram_news_limit: int = 50,
 ) -> dict:
     with generation_override_context(llm_overrides):
         with generation_meta_context():

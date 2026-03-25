@@ -510,7 +510,7 @@ def run_pipeline(
             news,
             transactions,
             llm_overrides=llm_overrides,
-            telegram_news_limit=min(max(1, news_max_articles), 30),
+            telegram_news_limit=min(max(1, news_max_articles), 50),
         )
         contents_summary = _summarize_contents(contents)
         _log(
@@ -739,7 +739,7 @@ def run_news_only_pipeline(
         contents = generate_news_only_contents(
             news,
             llm_overrides=llm_overrides,
-            telegram_news_limit=min(max(1, news_max_articles), 30),
+            telegram_news_limit=min(max(1, news_max_articles), 50),
         )
         contents_summary = _summarize_contents(contents)
         _emit_progress(

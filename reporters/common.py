@@ -428,7 +428,7 @@ def build_context(
     ]
     if transactions is not None:
         sections.append(f"[실거래 요약]\n{format_transactions_context(transactions)}")
-    sections.append(f"[주요 뉴스]\n{format_news_bucket(news)}")
+    sections.append(f"[주요 뉴스]\n{format_news_bucket(news, limit=len(news))}")
     return "\n\n".join(sections)
 
 

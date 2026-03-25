@@ -790,7 +790,7 @@ INDEX_TEMPLATE = """
         <input id="dry-news-days" name="news_days" type="number" min="1" value="1">
 
         <label for="dry-news-max">최대 뉴스 수</label>
-        <input id="dry-news-max" name="news_max_articles" type="number" min="1" value="5">
+        <input id="dry-news-max" name="news_max_articles" type="number" min="1" max="50" value="5">
 
         <label for="dry-transaction-limit">실거래 건수</label>
         <input id="dry-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
@@ -839,7 +839,7 @@ INDEX_TEMPLATE = """
         <input id="send-news-days" name="news_days" type="number" min="1" value="1">
 
         <label for="send-news-max">최대 뉴스 수</label>
-        <input id="send-news-max" name="news_max_articles" type="number" min="1" value="5">
+        <input id="send-news-max" name="news_max_articles" type="number" min="1" max="50" value="5">
 
         <label for="send-transaction-limit">실거래 건수</label>
         <input id="send-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
@@ -927,7 +927,7 @@ INDEX_TEMPLATE = """
         <input id="news-only-days" name="news_days" type="number" min="1" value="1">
 
         <label for="news-only-max">최대 뉴스 수</label>
-        <input id="news-only-max" name="news_max_articles" type="number" min="1" value="5">
+        <input id="news-only-max" name="news_max_articles" type="number" min="1" max="50" value="5">
 
         <label>LLM 사용</label>
         <div class="llm-list">
@@ -1690,7 +1690,7 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         run_mode = "full"
     send = _parse_bool(payload.get("send"), default=False)
     news_days = _parse_int(payload.get("news_days"), default=1)
-    news_max_articles = _parse_int(payload.get("news_max_articles"), default=5)
+    news_max_articles = min(_parse_int(payload.get("news_max_articles"), default=5), 50)
     transaction_limit = _parse_int(payload.get("transaction_limit"), default=2)
     channel_overrides = {
         "telegram": _parse_bool(payload.get("send_telegram"), default=False),
