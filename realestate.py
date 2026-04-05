@@ -215,6 +215,16 @@ def _fetch_complexes_by_dong_code(dong_code: str) -> tuple[dict[str, Any], ...]:
 
 
 @lru_cache(maxsize=2048)
+def _get_complex_main(complex_id: int) -> dict[str, Any]:
+    body = _request_json(
+        LAND_COMPLEX_API_URL,
+        "/complex/main",
+        params={"단지기본일련번호": complex_id},
+    )
+    return body.get("data", {}) or {}
+
+
+@lru_cache(maxsize=2048)
 def _get_complex_types_remote(complex_id: int) -> tuple[dict[str, Any], ...]:
     return _fetch_complex_types_remote(complex_id)
 
@@ -890,7 +900,7 @@ def _collect_region_transactions(
 
         try:
             complexes = _iter_region_complexes(region_name)
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             complexes = []
 
         for complex_info in complexes:
@@ -903,6 +913,18 @@ def _collect_region_transactions(
                 type_rows = _get_complex_types(complex_id)
             except RuntimeError:
                 continue
+            try:
+                main_info = _get_complex_main(complex_id)
+                complex_households = _normalize_int(main_info.get("총세대수"))
+                rental_households = _normalize_int(main_info.get("임대세대수"))
+            except RuntimeError:
+                main_info = {}
+                complex_households = None
+                rental_households = None
+            if not complex_households:
+                complex_households = sum(
+                    int(t.get("세대수") or 0) for t in type_rows
+                ) or None
 
             for area_type in area_types:
                 area_key = str(area_type)
@@ -916,6 +938,8 @@ def _collect_region_transactions(
                     continue
 
                 for trade in _parse_latest_trade_rows(raw_rows, complex_name, area_profile or {}, complex_id, area_id):
+                    trade["complex_households"] = complex_households
+                    trade["rental_households"] = rental_households
                     identity = (
                         trade["date"],
                         trade["contract_date"],

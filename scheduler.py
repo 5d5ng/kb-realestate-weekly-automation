@@ -4,6 +4,7 @@ APScheduler — 매주 금요일 10:30 자동 실행
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import time
@@ -14,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 import fcntl
 from apscheduler.schedulers.background import BackgroundScheduler
+
+_logger = logging.getLogger("pipeline")
 
 KST = ZoneInfo("Asia/Seoul")
 JOB_ID = "kb_weekly_pipeline"
@@ -40,7 +43,7 @@ def _now_text() -> str:
 
 
 def _log(message: str) -> None:
-    print(f"[{_now_text()}] [pipeline] {message}", flush=True)
+    _logger.info(message)
 
 
 def _emit_progress(

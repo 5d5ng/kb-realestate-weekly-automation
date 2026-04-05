@@ -18,10 +18,10 @@ load_dotenv(BASE_DIR / ".env.example", override=False)
 TIMEOUT_SEC = 60
 
 DEFAULT_TASK_MODELS = {
-    "telegram_report": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 4000},
+    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 5000},
     "alimtalk_message": {"provider": "none", "model": "", "max_tokens": 0},
     "instagram_caption": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 700},
-    "card_news_script": {"provider": "openai", "model": "gpt-5-mini", "max_tokens": 1000},
+    "card_news_script": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 1000},
     "naver_blog_post": {"provider": "none", "model": "", "max_tokens": 0},
 }
 
@@ -305,16 +305,26 @@ def _format_region_transactions(
         trades = (area_info or {}).get("trades", [])[:max_trades_per_area]
         rent_trades = (area_info or {}).get("rent_trades", [])[:max_trades_per_area]
         if not trades:
-            lines.append(f"{area_key}타입: 최근 거래 없음")
+            lines.append(f"  {area_key}타입: 최근 거래 없음")
         else:
-            trade_summary = " | ".join(_format_sale_trade_with_related_rent(trade) for trade in trades)
-            lines.append(f"{area_key}타입 매매: {trade_summary}")
+            lines.append(f"  {area_key}타입 매매:")
+            for trade in trades:
+                sale_text = format_trade_item(trade)
+                related_rents = (trade.get("related_rent_trades") or [])[:1]
+                if related_rents:
+                    rent_text = format_trade_item(related_rents[0])
+                    lines.append(f"    - {sale_text}")
+                    lines.append(f"      전세: {rent_text}")
+                else:
+                    lines.append(f"    - {sale_text}")
+                    lines.append(f"      전세: 최근 없음")
 
         if rent_trades:
-            rent_summary = " | ".join(format_trade_item(trade) for trade in rent_trades)
-            lines.append(f"{area_key}타입 전세 모음: {rent_summary}")
+            lines.append(f"  {area_key}타입 전세:")
+            for trade in rent_trades:
+                lines.append(f"    - {format_trade_item(trade)}")
         else:
-            lines.append(f"{area_key}타입 전세 모음: 최근 거래 없음")
+            lines.append(f"  {area_key}타입 전세: 최근 거래 없음")
     return lines
 
 

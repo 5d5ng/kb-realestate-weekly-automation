@@ -44,7 +44,9 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from app import app
+from log_config import setup_logging
 from scheduler import init_scheduler
+from startup_banner import print_banner
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,22 +58,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="로컬에서도 APScheduler 를 함께 실행합니다.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Flask debug/auto-reload 모드를 활성화합니다.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
+    setup_logging()
     args = parse_args()
 
     if args.with_scheduler:
         os.environ["ENABLE_SCHEDULER"] = "1"
-        init_scheduler()
-        print("[local-web] 스케줄러 포함 모드로 실행합니다.", flush=True)
+        # debug 모드에서 Werkzeug reloader가 자식 프로세스를 포크하므로
+        # 스케줄러 이중 초기화를 방지한다.
+        if not args.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+            init_scheduler()
+        mode = "스케줄러 포함"
     else:
         os.environ["ENABLE_SCHEDULER"] = "0"
-        print("[local-web] 수동 실행 전용 모드입니다. 스케줄러는 시작하지 않습니다.", flush=True)
+        mode = "수동 실행 전용"
 
-    print(f"[local-web] 브라우저 접속: http://{args.host}:{args.port}", flush=True)
-    app.run(host=args.host, port=args.port, debug=False)
+    print_banner(
+        mode=mode,
+        url=f"http://{args.host}:{args.port}",
+        debug=args.debug,
+    )
+    app.run(host=args.host, port=args.port, debug=args.debug)
     return 0
 
 
