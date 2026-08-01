@@ -2051,7 +2051,7 @@ def health():
 
 
 def _should_enable_scheduler() -> bool:
-    return os.getenv("ENABLE_SCHEDULER", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.getenv("ENABLE_SCHEDULER", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 if __name__ == "__main__":
