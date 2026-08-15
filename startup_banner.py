@@ -1,6 +1,7 @@
 """시작 배너 — 현재 설정 요약 출력"""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 BOLD = "\033[1m"
@@ -25,7 +26,11 @@ def print_banner(
 ) -> None:
     from db_backend import get_database_backend_snapshot
     from reporters.common import get_generation_plan
-    from sender import SEND_INSTAGRAM_ENABLED, SEND_SMS_ENABLED, SEND_TELEGRAM_ENABLED
+    from sender import (
+        SEND_SMS_ENABLED,
+        SEND_TELEGRAM_ENABLED,
+        SEND_TELEGRAM_PROMPT_FILES_ENABLED,
+    )
 
     db = get_database_backend_snapshot()
     plan = get_generation_plan()
@@ -52,7 +57,12 @@ def print_banner(
     print(f"  LLM:        {llm_summary}")
     print(f"  DB:         {db_detail}")
     print(f"  Telegram:   {_status_icon(SEND_TELEGRAM_ENABLED)} ", end="")
+    print(f"  Prompt files: {_status_icon(SEND_TELEGRAM_PROMPT_FILES_ENABLED)} ", end="")
     print(f"  SMS: {_status_icon(SEND_SMS_ENABLED)} ", end="")
-    print(f"  Instagram: {_status_icon(SEND_INSTAGRAM_ENABLED)}")
+    instagram_publisher_enabled = os.getenv(
+        "INSTAGRAM_PUBLISHING_ENABLED",
+        "0",
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    print(f"  Instagram MCP: {_status_icon(instagram_publisher_enabled)}")
     print(f"  Log:        logs/pipeline.log")
     print(f"{BOLD}{LINE}{RESET}\n")

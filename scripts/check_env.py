@@ -51,6 +51,7 @@ TIERS: list[tuple[str, str, list[str]]] = [
         "발송 — 텔레그램",
         "delivery",
         [
+            "SEND_TELEGRAM_PROMPT_FILES_ENABLED",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
         ],
@@ -74,11 +75,21 @@ TIERS: list[tuple[str, str, list[str]]] = [
         ],
     ),
     (
-        "선택 — 인스타그램",
+        "선택 — Instagram 게시 MCP",
         "optional",
         [
-            "META_ACCESS_TOKEN",
-            "META_INSTAGRAM_ID",
+            "INSTAGRAM_ACCOUNT_REGISTRY",
+            "INSTAGRAM_PUBLISHING_ENABLED",
+            "INSTAGRAM_DDONY_MARBLE_PUBLISHING_ENABLED",
+            "INSTAGRAM_DDONY_MARBLE_ACCESS_TOKEN",
+            "INSTAGRAM_GRAPH_API_VERSION",
+        ],
+    ),
+    (
+        "발송 — 카카오톡",
+        "delivery",
+        [
+            "KAKAO_REST_API_KEY",
         ],
     ),
 ]

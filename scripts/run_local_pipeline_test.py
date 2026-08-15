@@ -20,11 +20,15 @@
 3. 실제 텔레그램 / SMS 발송까지 포함해서 테스트
    python scripts/run_local_pipeline_test.py --send
 
-4. 결과를 JSON 파일로도 저장
+4. 실제 발송에서 프롬프트 파일 첨부만 끄기
+   python scripts/run_local_pipeline_test.py --send --no-send-prompt-files
+
+5. 결과를 JSON 파일로도 저장
    python scripts/run_local_pipeline_test.py --output reports/local_test_result.json
 
 주의:
 - `--send` 를 주면 텔레그램과 SOLAPI SMS 가 실제 발송된다.
+- 기본 설정에서는 `--send` 실행 시 생성된 프롬프트 파일도 텔레그램 문서로 전송된다.
 - 처음에는 `--send` 없이 dry-run 으로 확인하는 것을 권장한다.
 - 프롬프트 파일은 실행 후 `reports/prompts/` 아래에 저장된다.
 """
@@ -54,6 +58,18 @@ def parse_args() -> argparse.Namespace:
         help="실제 발송까지 수행합니다. 지정하지 않으면 dry-run 입니다.",
     )
     parser.add_argument(
+        "--send-prompt-files",
+        action="store_true",
+        default=None,
+        help="--send 와 함께 사용할 때 생성된 프롬프트 파일을 텔레그램 문서로 전송합니다.",
+    )
+    parser.add_argument(
+        "--no-send-prompt-files",
+        action="store_false",
+        dest="send_prompt_files",
+        help="--send 와 함께 사용할 때 프롬프트 파일 텔레그램 첨부 전송을 끕니다.",
+    )
+    parser.add_argument(
         "--news-days",
         type=int,
         default=1,
@@ -72,10 +88,26 @@ def parse_args() -> argparse.Namespace:
         help="지역/타입별 최근 실거래 최대 건수. 기본값은 2건입니다.",
     )
     parser.add_argument(
+        "--skip-transactions",
+        action="store_true",
+        help="실거래 조회를 생략하고 작성 패키지/보고서 생성을 빠르게 진행합니다.",
+    )
+    parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="발송 없이도 선별 지역 실거래 캐시를 먼저 갱신합니다.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="",
         help="결과 JSON 을 저장할 파일 경로. 예: reports/local_test_result.json",
+    )
+    parser.add_argument(
+        "--output-mode",
+        choices=("authoring_package", "draft_only", "both"),
+        default="both",
+        help="작성 산출물 생성 방식. 기본값은 외부 LLM 패키지와 Markdown 초안 모두 생성입니다.",
     )
     parser.add_argument(
         "--json",
@@ -114,10 +146,12 @@ def _print_rich_result(result: dict) -> None:
         table.add_column("항목", style="bold")
         table.add_column("값", justify="right")
         table.add_row("기준일", str(analysis.get("latest_date", "")))
-        table.add_row("매매 상위", str(analysis.get("sale_top5", 0)))
-        table.add_row("매매 하위", str(analysis.get("sale_bottom5", 0)))
-        table.add_row("전세 상위", str(analysis.get("rent_top5", 0)))
-        table.add_row("전세 하위", str(analysis.get("rent_bottom5", 0)))
+        table.add_row("서울 매매", str(analysis.get("seoul_sale_all", 0)))
+        table.add_row("서울 전세", str(analysis.get("seoul_rent_all", 0)))
+        table.add_row("수도권 매매 상위", str(analysis.get("capital_sale_top5", 0)))
+        table.add_row("수도권 전세 상위", str(analysis.get("capital_rent_top5", 0)))
+        table.add_row("비수도권 매매 상위", str(analysis.get("non_capital_sale_top5", 0)))
+        table.add_row("비수도권 전세 상위", str(analysis.get("non_capital_rent_top5", 0)))
         console.print(table)
 
     # 실거래 요약
@@ -192,14 +226,24 @@ def _print_rich_result(result: dict) -> None:
         console.print(table)
 
     # 프롬프트 파일 경로
-    prompt_files = result.get("contents_summary", {}).get("prompt_files") or {}
+    prompt_files = result.get("prompt_files") or result.get("contents_summary", {}).get("prompt_files") or {}
+    prompt_archive_files = result.get("prompt_archive_files") or result.get("contents_summary", {}).get("prompt_archive_files") or {}
+    authoring_files = result.get("authoring_files") or result.get("contents_summary", {}).get("authoring_files") or {}
+    authoring_archive_files = result.get("authoring_archive_files") or result.get("contents_summary", {}).get("authoring_archive_files") or {}
     artifact_files = result.get("artifact_files", [])
-    if prompt_files or artifact_files:
+    if prompt_files or authoring_files or artifact_files:
         console.print("\n[bold]생성된 파일:[/]")
+        for name, path in authoring_files.items():
+            console.print(f"  [dim]{name}:[/] {path}")
+        for name, path in authoring_archive_files.items():
+            console.print(f"  [dim]{name} archive:[/] {path}")
         for name, path in prompt_files.items():
             console.print(f"  [dim]{name}:[/] {path}")
+        for name, path in prompt_archive_files.items():
+            console.print(f"  [dim]{name} archive:[/] {path}")
         for path in artifact_files:
-            if path not in prompt_files.values():
+            known_paths = set(prompt_files.values()) | set(prompt_archive_files.values()) | set(authoring_files.values()) | set(authoring_archive_files.values())
+            if path not in known_paths:
                 console.print(f"  [dim]artifact:[/] {path}")
 
     console.print()
@@ -214,9 +258,13 @@ def main() -> int:
         print_banner(mode=f"CLI {mode}")
         print(
             f"[local-test] send={args.send}, "
+            f"send_prompt_files={args.send_prompt_files}, "
             f"news_days={args.news_days}, "
             f"news_max_articles={args.news_max_articles}, "
-            f"transaction_limit={args.transaction_limit}",
+            f"transaction_limit={args.transaction_limit}, "
+            f"skip_transactions={args.skip_transactions}, "
+            f"refresh_cache={args.refresh_cache}, "
+            f"output_mode={args.output_mode}",
             flush=True,
         )
 
@@ -225,6 +273,10 @@ def main() -> int:
         news_days=args.news_days,
         news_max_articles=args.news_max_articles,
         transaction_limit=args.transaction_limit,
+        skip_transactions=args.skip_transactions,
+        refresh_cache=args.refresh_cache,
+        send_prompt_files=args.send_prompt_files if args.send else None,
+        output_mode=args.output_mode,
     )
 
     result_text = json.dumps(result, ensure_ascii=False, indent=2)

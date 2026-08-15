@@ -22,7 +22,7 @@ import valuation_db
 TIMEOUT_SEC = 30
 DEFAULT_LIMIT = 5
 DEFAULT_AREA_TYPES = (84, 59)
-MAX_REGIONS_PER_BUCKET = 5
+MAX_TOP_REGIONS_PER_BUCKET = 5
 REQUEST_RETRY_COUNT = 3
 REQUEST_RETRY_DELAY_SEC = 1.0
 REGION_RETRY_COUNT = 2
@@ -31,14 +31,12 @@ COMPLEX_CACHE_MAX_AGE_HOURS = 24 * 7
 REALTRADE_CACHE_TTL_SEC = 60 * 60 * 24
 MAX_REGION_WORKERS = 6
 CONTENT_REGION_BUCKETS = (
+    "seoul_sale_all",
+    "seoul_rent_all",
     "capital_sale_top5",
-    "capital_sale_bottom5",
     "capital_rent_top5",
-    "capital_rent_bottom5",
     "non_capital_sale_top5",
-    "non_capital_sale_bottom5",
     "non_capital_rent_top5",
-    "non_capital_rent_bottom5",
 )
 
 LAND_COMPLEX_API_URL = "https://api.kbland.kr/land-complex"
@@ -405,7 +403,11 @@ def _extract_grouped_region_names(regions: Any) -> dict[str, list[str]] | None:
             elif isinstance(item, dict) and item.get("region"):
                 region_names.append(_clean_text(item["region"]))
 
-        grouped_regions[bucket_name] = list(dict.fromkeys(filter(None, region_names)))[:MAX_REGIONS_PER_BUCKET]
+        unique_names = list(dict.fromkeys(filter(None, region_names)))
+        grouped_regions[bucket_name] = (
+            unique_names if bucket_name.startswith("seoul_")
+            else unique_names[:MAX_TOP_REGIONS_PER_BUCKET]
+        )
 
     return grouped_regions
 
@@ -1060,8 +1062,8 @@ def get_recent_transactions(
     """
     analyzer.py 결과 또는 지역명 목록을 받아 최근 매매 실거래를 반환한다.
 
-    `content_regions` 8개 버킷이 포함된 analyzer 결과를 넣으면,
-    버킷별 -> 지역별 -> 면적타입별 구조로 반환한다.
+    `content_regions` 6개 상승 섹션이 포함된 analyzer 결과를 넣으면,
+    섹션별 -> 지역별 -> 면적타입별 구조로 반환한다.
 
     반환 형식:
     {

@@ -17,10 +17,13 @@ from reporters.common import get_generation_plan, get_llm_config_snapshot
 from scheduler import init_scheduler, run_news_only_pipeline, run_pipeline
 from sender import (
     SEND_INSTAGRAM_ENABLED,
+    SEND_KAKAO_ENABLED,
     SEND_SMS_ENABLED,
     SEND_TELEGRAM_ENABLED,
+    SEND_TELEGRAM_PROMPT_FILES_ENABLED,
     get_delivery_config_snapshot,
     send_telegram,
+    send_telegram_documents,
 )
 from valuation_web import valuation_bp
 
@@ -231,6 +234,10 @@ INDEX_TEMPLATE = """
       border: 1px solid var(--line);
       border-radius: 14px;
       background: #fff;
+    }
+    .channel-item.disabled {
+      opacity: 0.55;
+      background: #f8fafc;
     }
     .channel-item input[type="checkbox"] {
       width: auto;
@@ -695,27 +702,64 @@ INDEX_TEMPLATE = """
       gap: 12px;
       margin-top: 12px;
     }
-    .prompt-actions {
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    .prompt-section {
+      display: grid;
+      gap: 10px;
     }
-    .prompt-button {
+    .prompt-section-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .prompt-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .prompt-card {
+      display: grid;
+      gap: 10px;
       border: 1px solid var(--line);
-      background: #fff;
+      background: #fffdf9;
       border-radius: 14px;
       padding: 12px 14px;
+    }
+    .prompt-card.active {
+      border-color: var(--accent);
+      background: rgba(15, 118, 110, 0.08);
+    }
+    .prompt-card-label {
       font-size: 14px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .prompt-card-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    .prompt-card-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .prompt-open-button,
+    .prompt-copy-button {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 13px;
       font-weight: 700;
       cursor: pointer;
-      text-align: left;
+      color: var(--ink);
     }
-    .prompt-button:hover {
-      border-color: var(--primary);
-      color: var(--primary);
-    }
-    .prompt-button.active {
-      border-color: var(--primary);
-      background: rgba(33, 133, 124, 0.08);
-      color: var(--primary);
+    .prompt-open-button:hover,
+    .prompt-copy-button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
     }
     .prompt-empty {
       color: var(--muted);
@@ -776,6 +820,7 @@ INDEX_TEMPLATE = """
       <div class="actions">
         <button id="preflight-button" type="button" class="secondary">사전 점검 실행</button>
         <button id="telegram-test-button" type="button">텔레그램 단독 테스트</button>
+        <button id="telegram-prompts-button" type="button">현재 프롬프트 파일 전송</button>
       </div>
       <pre id="preflight-result" class="json-block">아직 사전 점검 결과가 없습니다.</pre>
     </section>
@@ -794,6 +839,21 @@ INDEX_TEMPLATE = """
 
         <label for="dry-transaction-limit">실거래 건수</label>
         <input id="dry-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
+
+        <label class="channel-item">
+          <input type="checkbox" name="skip_transactions">
+          <span class="channel-copy">
+            <span class="channel-title">실거래 조회 생략</span>
+            <span class="channel-desc">Claude/GPT 작성 패키지를 빠르게 만들 때 사용합니다. 실행 시간이 크게 줄어듭니다.</span>
+          </span>
+        </label>
+
+        <label for="dry-output-mode">산출물</label>
+        <select id="dry-output-mode" name="output_mode">
+          <option value="both" selected>외부 LLM 패키지 + 완성 Markdown 초안</option>
+          <option value="authoring_package">외부 LLM 패키지만</option>
+          <option value="draft_only">완성 Markdown 초안만</option>
+        </select>
 
         <label>LLM 사용 플랫폼</label>
         <div class="llm-list">
@@ -844,6 +904,21 @@ INDEX_TEMPLATE = """
         <label for="send-transaction-limit">실거래 건수</label>
         <input id="send-transaction-limit" name="transaction_limit" type="number" min="1" value="2">
 
+        <label class="channel-item">
+          <input type="checkbox" name="skip_transactions">
+          <span class="channel-copy">
+            <span class="channel-title">실거래 조회 생략</span>
+            <span class="channel-desc">빠른 발송 테스트용입니다. 지역별 실거래 표는 비어 있을 수 있습니다.</span>
+          </span>
+        </label>
+
+        <label for="send-output-mode">산출물</label>
+        <select id="send-output-mode" name="output_mode">
+          <option value="both" selected>외부 LLM 패키지 + 완성 Markdown 초안</option>
+          <option value="authoring_package">외부 LLM 패키지만</option>
+          <option value="draft_only">완성 Markdown 초안만</option>
+        </select>
+
         <label>LLM 사용 플랫폼</label>
         <div class="llm-list">
           {% for task in web_llm_tasks %}
@@ -891,6 +966,18 @@ INDEX_TEMPLATE = """
           <label class="channel-item">
             <input
               type="checkbox"
+              name="send_prompt_files"
+              {% if default_channels.telegram_prompt_files %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">프롬프트 파일 첨부</span>
+              <span class="channel-desc">생성된 프롬프트 파일을 텔레그램 문서로 함께 전송합니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
               name="send_sms"
               {% if default_channels.sms %}checked{% endif %}
             >
@@ -909,6 +996,18 @@ INDEX_TEMPLATE = """
             <span class="channel-copy">
               <span class="channel-title">인스타그램</span>
               <span class="channel-desc">현재 업로드 기능은 보류 상태입니다. 켜도 스킵될 수 있습니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
+              name="send_kakao"
+              {% if default_channels.kakao %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">카카오톡</span>
+              <span class="channel-desc">나에게 보내기로 알림톡 메시지를 전송합니다.</span>
             </span>
           </label>
         </div>
@@ -974,6 +1073,18 @@ INDEX_TEMPLATE = """
           <label class="channel-item">
             <input
               type="checkbox"
+              name="send_prompt_files"
+              {% if default_channels.telegram_prompt_files %}checked{% endif %}
+            >
+            <span class="channel-copy">
+              <span class="channel-title">프롬프트 파일 첨부</span>
+              <span class="channel-desc">뉴스 전용 프롬프트 파일을 텔레그램 문서로 함께 전송합니다.</span>
+            </span>
+          </label>
+
+          <label class="channel-item">
+            <input
+              type="checkbox"
               name="send_sms"
               {% if default_channels.sms %}checked{% endif %}
             >
@@ -991,7 +1102,8 @@ INDEX_TEMPLATE = """
     </section>
 
     <p class="hint">
-      프롬프트 파일은 <code>reports/prompts/</code> 아래에 저장됩니다.
+      작성 패키지는 <code>reports/llm_package.md</code>, 완성 초안은 <code>reports/weekly_report.md</code> 로 저장됩니다.
+      기존 프롬프트 파일은 <code>reports/prompts/</code> 아래에 유지됩니다.
       수동 API 호출은 <code>POST /run</code> 으로도 가능합니다.
     </p>
 
@@ -1056,18 +1168,18 @@ INDEX_TEMPLATE = """
       <div class="card">
         <div class="panel-head">
           <div class="panel-copy">
-            <div class="panel-title">LLM 프롬프트</div>
-            <div class="panel-text">실행 중 생성된 프롬프트를 바로 열고 복사할 수 있습니다.</div>
+            <div class="panel-title">작성 패키지 / 프롬프트</div>
+            <div class="panel-text">외부 LLM 패키지, 완성 Markdown 초안, 기존 프롬프트를 열고 바로 복사합니다.</div>
           </div>
         </div>
         <div id="prompt-actions" class="prompt-actions">
-          <div class="prompt-empty">아직 확인할 프롬프트가 없습니다.</div>
+          <div class="prompt-empty">아직 확인할 작성 파일이 없습니다.</div>
         </div>
         <div class="actions">
-          <button id="copy-current-prompt" type="button" class="secondary">현재 프롬프트 복사</button>
+          <button id="copy-current-prompt" type="button" class="secondary">현재 선택 파일 복사</button>
         </div>
         <div id="prompt-copy-status" class="copy-status"></div>
-        <pre id="prompt-viewer" class="json-block">아직 실행된 프롬프트가 없습니다.</pre>
+        <pre id="prompt-viewer" class="json-block">아직 실행된 작성 파일이 없습니다.</pre>
       </div>
       <div class="card">
         <div class="panel-head">
@@ -1097,10 +1209,25 @@ INDEX_TEMPLATE = """
     const STAGES = ["queued", "lock", "analysis", "cache", "transactions", "news", "contents", "send", "done"];
     const PROMPT_LABELS = {
       telegram_report: "텔레그램 리포트",
+      alimtalk_message: "알림톡 메시지",
       instagram_caption: "인스타 캡션",
       card_news_script: "카드뉴스 스크립트",
       naver_blog_post: "네이버 블로그 초안",
+      llm_package: "Claude/GPT 작성 패키지",
+      weekly_report: "완성 Markdown 초안",
+      data_snapshot: "자료 JSON",
     };
+    const PROMPT_ORDER = [
+      "llm_package",
+      "weekly_report",
+      "data_snapshot",
+      "telegram_report",
+      "naver_blog_post",
+      "alimtalk_message",
+      "instagram_caption",
+      "card_news_script",
+    ];
+    const REQUIRED_PROMPT_TASKS = new Set(["llm_package", "weekly_report", "data_snapshot"]);
     const STAGE_LABELS = {
       queued: "대기",
       lock: "락",
@@ -1114,6 +1241,7 @@ INDEX_TEMPLATE = """
     };
     let currentPromptTask = null;
     let currentPromptContent = "";
+    let currentPromptRunId = null;
     const STATUS_COPY = {
       idle: {
         title: "대기 중",
@@ -1230,9 +1358,12 @@ INDEX_TEMPLATE = """
       data.run_mode = runMode;
 
       if (send) {
-        data.send_telegram = form.querySelector('input[name="send_telegram"]')?.checked || false;
+        const sendTelegram = form.querySelector('input[name="send_telegram"]')?.checked || false;
+        data.send_telegram = sendTelegram;
+        data.send_prompt_files = sendTelegram && (form.querySelector('input[name="send_prompt_files"]')?.checked || false);
         data.send_sms = form.querySelector('input[name="send_sms"]')?.checked || false;
         data.send_instagram = form.querySelector('input[name="send_instagram"]')?.checked || false;
+        data.send_kakao = form.querySelector('input[name="send_kakao"]')?.checked || false;
       }
 
       data.llm_telegram_report = form.querySelector('input[name="llm_telegram_report"]')?.checked || false;
@@ -1255,18 +1386,71 @@ INDEX_TEMPLATE = """
       });
     }
 
+    function syncPromptFileControls() {
+      document.querySelectorAll('form').forEach((form) => {
+        const telegramCheckbox = form.querySelector('input[name="send_telegram"]');
+        const promptFileCheckbox = form.querySelector('input[name="send_prompt_files"]');
+        if (!telegramCheckbox || !promptFileCheckbox) return;
+
+        const enabled = telegramCheckbox.checked;
+        promptFileCheckbox.disabled = !enabled;
+        if (!enabled) {
+          promptFileCheckbox.checked = false;
+        }
+        promptFileCheckbox.closest(".channel-item")?.classList.toggle("disabled", !enabled);
+      });
+    }
+
     function resetPromptPanel() {
       currentPromptTask = null;
       currentPromptContent = "";
-      document.getElementById("prompt-actions").innerHTML = '<div class="prompt-empty">아직 확인할 프롬프트가 없습니다.</div>';
-      document.getElementById("prompt-viewer").textContent = "아직 실행된 프롬프트가 없습니다.";
+      currentPromptRunId = null;
+      document.getElementById("prompt-actions").innerHTML = '<div class="prompt-empty">아직 확인할 작성 파일이 없습니다.</div>';
+      document.getElementById("prompt-viewer").textContent = "아직 실행된 작성 파일이 없습니다.";
       document.getElementById("prompt-copy-status").textContent = "";
     }
 
-    async function loadPrompt(runId, taskName, { copy = false } = {}) {
+    function getPromptResultPayload(payload) {
+      if (!payload || typeof payload !== "object") {
+        return {};
+      }
+      return payload.result || payload;
+    }
+
+    function getPromptEntries(payload) {
+      const result = getPromptResultPayload(payload);
+      const promptFiles = result.prompt_files || {};
+      const authoringFiles = result.authoring_files || {};
+      const entries = Object.entries({ ...authoringFiles, ...promptFiles });
+      return entries.sort((left, right) => {
+        const leftIndex = PROMPT_ORDER.indexOf(left[0]);
+        const rightIndex = PROMPT_ORDER.indexOf(right[0]);
+        const normalizedLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+        const normalizedRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+        return normalizedLeft - normalizedRight;
+      });
+    }
+
+    function updatePromptSelection(taskName) {
+      document.querySelectorAll(".prompt-card").forEach((card) => {
+        card.classList.toggle("active", card.getAttribute("data-task-name") === taskName);
+      });
+    }
+
+    async function writePromptToClipboard(taskName, content) {
+      const statusEl = document.getElementById("prompt-copy-status");
+      try {
+        await navigator.clipboard.writeText(content);
+        statusEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 파일을 복사했습니다.`;
+      } catch (error) {
+        statusEl.textContent = `파일 복사에 실패했습니다: ${String(error)}`;
+      }
+    }
+
+    async function loadPrompt(runId, taskName) {
       const viewerEl = document.getElementById("prompt-viewer");
       const statusEl = document.getElementById("prompt-copy-status");
-      viewerEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 프롬프트를 불러오는 중입니다.`;
+      viewerEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 파일을 불러오는 중입니다.`;
       statusEl.textContent = "";
       try {
         const response = await fetch(`/run/prompt/${runId}/${taskName}`);
@@ -1275,16 +1459,44 @@ INDEX_TEMPLATE = """
           viewerEl.textContent = JSON.stringify(payload, null, 2);
           return;
         }
+        currentPromptRunId = runId;
         currentPromptTask = taskName;
         currentPromptContent = payload.content || "";
-        viewerEl.textContent = currentPromptContent || "프롬프트 내용이 비어 있습니다.";
-        document.querySelectorAll(".prompt-button").forEach((button) => {
-          button.classList.toggle("active", button.getAttribute("data-task-name") === taskName);
-        });
-        if (copy && currentPromptContent) {
-          await navigator.clipboard.writeText(currentPromptContent);
-          statusEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 프롬프트를 복사했습니다.`;
+        viewerEl.textContent = currentPromptContent || "파일 내용이 비어 있습니다.";
+        updatePromptSelection(taskName);
+      } catch (error) {
+        viewerEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
+      }
+    }
+
+    async function copyPrompt(runId, taskName) {
+      const statusEl = document.getElementById("prompt-copy-status");
+      statusEl.textContent = "";
+
+      if (currentPromptRunId === runId && currentPromptTask === taskName && currentPromptContent) {
+        await writePromptToClipboard(taskName, currentPromptContent);
+        return;
+      }
+
+      const viewerEl = document.getElementById("prompt-viewer");
+      viewerEl.textContent = `${PROMPT_LABELS[taskName] || taskName} 파일을 불러오는 중입니다.`;
+      try {
+        const response = await fetch(`/run/prompt/${runId}/${taskName}`);
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          viewerEl.textContent = JSON.stringify(payload, null, 2);
+          return;
         }
+        currentPromptRunId = runId;
+        currentPromptTask = taskName;
+        currentPromptContent = payload.content || "";
+        viewerEl.textContent = currentPromptContent || "파일 내용이 비어 있습니다.";
+        updatePromptSelection(taskName);
+        if (!currentPromptContent) {
+          statusEl.textContent = "복사할 파일 내용이 비어 있습니다.";
+          return;
+        }
+        await writePromptToClipboard(taskName, currentPromptContent);
       } catch (error) {
         viewerEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
       }
@@ -1292,30 +1504,62 @@ INDEX_TEMPLATE = """
 
     function renderPromptPanel(payload) {
       const actionsEl = document.getElementById("prompt-actions");
-      const promptFiles = payload?.result?.prompt_files || {};
-      const runId = payload?.run_id;
-      const entries = Object.entries(promptFiles);
+      const result = getPromptResultPayload(payload);
+      const runId = payload?.run_id || result?.run_id || activeRunId;
+      const entries = getPromptEntries(payload);
       if (!runId || !entries.length) {
         resetPromptPanel();
         return;
       }
 
-      actionsEl.innerHTML = entries.map(([taskName, _path]) => `
-        <button type="button" class="prompt-button" data-task-name="${taskName}">
-          ${PROMPT_LABELS[taskName] || taskName}
-        </button>
-      `).join("");
+      const requiredEntries = entries.filter(([taskName]) => REQUIRED_PROMPT_TASKS.has(taskName));
+      const optionalEntries = entries.filter(([taskName]) => !REQUIRED_PROMPT_TASKS.has(taskName));
+      const renderSection = (title, sectionEntries) => {
+        if (!sectionEntries.length) {
+          return "";
+        }
+        return `
+          <div class="prompt-section">
+            <div class="prompt-section-title">${title}</div>
+            <div class="prompt-grid">
+              ${sectionEntries.map(([taskName, path]) => `
+                <div class="prompt-card" data-task-name="${taskName}">
+                  <div class="prompt-card-label">${PROMPT_LABELS[taskName] || taskName}</div>
+                  <div class="prompt-card-meta">${escapeHtml(path)}</div>
+                  <div class="prompt-card-actions">
+                    <button type="button" class="prompt-open-button" data-task-name="${taskName}">열기</button>
+                    <button type="button" class="prompt-copy-button" data-task-name="${taskName}">복사</button>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      };
 
-      actionsEl.querySelectorAll(".prompt-button").forEach((button) => {
+      actionsEl.innerHTML = [
+        renderSection("작성 산출물", requiredEntries),
+        renderSection("플랫폼 프롬프트", optionalEntries),
+      ].filter(Boolean).join("");
+
+      actionsEl.querySelectorAll(".prompt-open-button").forEach((button) => {
         button.addEventListener("click", () => {
           const taskName = button.getAttribute("data-task-name");
-          loadPrompt(runId, taskName || "", { copy: true });
+          loadPrompt(runId, taskName || "");
+        });
+      });
+      actionsEl.querySelectorAll(".prompt-copy-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const taskName = button.getAttribute("data-task-name");
+          copyPrompt(runId, taskName || "");
         });
       });
 
       const firstTaskName = entries[0][0];
-      if (currentPromptTask !== firstTaskName) {
+      if (currentPromptRunId !== runId || currentPromptTask !== firstTaskName) {
         loadPrompt(runId, firstTaskName);
+      } else {
+        updatePromptSelection(firstTaskName);
       }
     }
 
@@ -1350,6 +1594,11 @@ INDEX_TEMPLATE = """
       const resultEl = document.getElementById("result");
       if (payload.result) {
         resultEl.textContent = JSON.stringify(payload.result, null, 2);
+        renderPromptPanel(payload);
+        return;
+      }
+      if (payload.prompt_files) {
+        resultEl.textContent = JSON.stringify(payload, null, 2);
         renderPromptPanel(payload);
         return;
       }
@@ -1591,6 +1840,24 @@ INDEX_TEMPLATE = """
       }
     }
 
+    async function sendCurrentPromptFiles() {
+      const preflightEl = document.getElementById("preflight-result");
+      const ok = window.confirm("현재 reports/prompts/*.txt 파일을 텔레그램 문서로 전송할까요?");
+      if (!ok) return;
+
+      preflightEl.textContent = "현재 프롬프트 파일을 텔레그램으로 전송하는 중입니다.";
+      try {
+        const response = await fetch("/test/telegram/prompts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const payload = await response.json();
+        preflightEl.textContent = JSON.stringify(payload, null, 2);
+      } catch (error) {
+        preflightEl.textContent = JSON.stringify({ success: false, error: String(error) }, null, 2);
+      }
+    }
+
     document.getElementById("dry-run-form").addEventListener("submit", function (event) {
       event.preventDefault();
       submitForm(event.currentTarget, false, "full");
@@ -1620,23 +1887,27 @@ INDEX_TEMPLATE = """
     document.getElementById("refresh-runs-button").addEventListener("click", loadRecentRuns);
     document.getElementById("preflight-button").addEventListener("click", runPreflight);
     document.getElementById("telegram-test-button").addEventListener("click", runTelegramTest);
+    document.getElementById("telegram-prompts-button").addEventListener("click", sendCurrentPromptFiles);
     document.querySelectorAll('input[name^="llm_"]').forEach((checkbox) => {
       checkbox.addEventListener("change", syncLlmModelControls);
+    });
+    document.querySelectorAll('input[name="send_telegram"]').forEach((checkbox) => {
+      checkbox.addEventListener("change", syncPromptFileControls);
     });
     document.getElementById("copy-current-prompt").addEventListener("click", async function () {
       const statusEl = document.getElementById("prompt-copy-status");
       if (!currentPromptContent) {
-        statusEl.textContent = "복사할 프롬프트가 아직 없습니다.";
+        statusEl.textContent = "복사할 파일이 아직 없습니다.";
         return;
       }
-      await navigator.clipboard.writeText(currentPromptContent);
-      statusEl.textContent = `${PROMPT_LABELS[currentPromptTask] || currentPromptTask || "현재"} 프롬프트를 복사했습니다.`;
+      await writePromptToClipboard(currentPromptTask || "current", currentPromptContent);
     });
 
     updateRunMeta({ status: "대기", current_stage: "-", run_id: "-", started_at: "-" });
     renderStageBoard({});
     resetPromptPanel();
     syncLlmModelControls();
+    syncPromptFileControls();
     loadRecentRuns();
 
     const savedRunId = localStorage.getItem(ACTIVE_RUN_STORAGE_KEY);
@@ -1663,6 +1934,11 @@ def _parse_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_output_mode(value: object) -> str:
+    normalized = str(value or "both").strip().lower()
+    return normalized if normalized in {"authoring_package", "draft_only", "both"} else "both"
 
 
 def _parse_llm_override(payload: dict[str, Any], task_name: str, *, default_enabled: bool = True) -> dict[str, Any] | bool:
@@ -1692,15 +1968,24 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     news_days = _parse_int(payload.get("news_days"), default=1)
     news_max_articles = _parse_int(payload.get("news_max_articles"), default=5)
     transaction_limit = _parse_int(payload.get("transaction_limit"), default=2)
+    skip_transactions = _parse_bool(payload.get("skip_transactions"), default=False)
+    output_mode = _parse_output_mode(payload.get("output_mode"))
     channel_overrides = {
         "telegram": _parse_bool(payload.get("send_telegram"), default=False),
         "sms": _parse_bool(payload.get("send_sms"), default=False),
         "instagram": _parse_bool(payload.get("send_instagram"), default=False) if run_mode == "full" else False,
+        "kakao": _parse_bool(payload.get("send_kakao"), default=False),
     }
+    send_prompt_files = (
+        channel_overrides["telegram"]
+        and _parse_bool(payload.get("send_prompt_files"), default=SEND_TELEGRAM_PROMPT_FILES_ENABLED)
+        if send
+        else None
+    )
     llm_overrides = {
-        "telegram_report": _parse_llm_override(payload, "telegram_report", default_enabled=True),
-        "instagram_caption": _parse_llm_override(payload, "instagram_caption", default_enabled=True),
-        "card_news_script": _parse_llm_override(payload, "card_news_script", default_enabled=True),
+        "telegram_report": _parse_llm_override(payload, "telegram_report", default_enabled=False),
+        "instagram_caption": _parse_llm_override(payload, "instagram_caption", default_enabled=False),
+        "card_news_script": _parse_llm_override(payload, "card_news_script", default_enabled=False),
     }
     return {
         "run_mode": run_mode,
@@ -1708,7 +1993,10 @@ def _parse_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "news_days": news_days,
         "news_max_articles": news_max_articles,
         "transaction_limit": transaction_limit,
+        "skip_transactions": skip_transactions,
+        "output_mode": output_mode,
         "channel_overrides": channel_overrides if send else None,
+        "send_prompt_files": send_prompt_files,
         "llm_overrides": llm_overrides,
     }
 
@@ -1799,6 +2087,7 @@ def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
             news_days=options["news_days"],
             news_max_articles=options["news_max_articles"],
             channel_overrides=options["channel_overrides"],
+            send_prompt_files=options.get("send_prompt_files"),
             llm_overrides=options.get("llm_overrides"),
             progress_callback=progress_callback,
         )
@@ -1809,8 +2098,11 @@ def _execute_run_async(run_id: str, options: dict[str, Any]) -> None:
             news_days=options["news_days"],
             news_max_articles=options["news_max_articles"],
             transaction_limit=options["transaction_limit"],
+            skip_transactions=options.get("skip_transactions", False),
             channel_overrides=options["channel_overrides"],
+            send_prompt_files=options.get("send_prompt_files"),
             llm_overrides=options.get("llm_overrides"),
+            output_mode=options.get("output_mode"),
             progress_callback=progress_callback,
         )
 
@@ -1860,7 +2152,10 @@ def _start_background_run(options: dict[str, Any]) -> dict[str, Any]:
                         "send": options["send"],
                         "run_mode": options.get("run_mode", "full"),
                         "channel_overrides": options.get("channel_overrides") or {},
+                        "send_prompt_files": options.get("send_prompt_files"),
                         "llm_overrides": options.get("llm_overrides") or {},
+                        "output_mode": options.get("output_mode"),
+                        "skip_transactions": options.get("skip_transactions"),
                     },
                 }
             ],
@@ -1884,15 +2179,13 @@ def index():
         INDEX_TEMPLATE,
         default_channels={
             "telegram": SEND_TELEGRAM_ENABLED,
+            "telegram_prompt_files": SEND_TELEGRAM_PROMPT_FILES_ENABLED,
             "sms": SEND_SMS_ENABLED,
             "instagram": SEND_INSTAGRAM_ENABLED,
+            "kakao": SEND_KAKAO_ENABLED,
         },
         web_llm_tasks=WEB_LLM_TASKS,
-        default_llm_tasks={
-            task["name"]: (get_generation_plan().get(task["name"], {}).get("provider") != "none")
-            and int(get_generation_plan().get(task["name"], {}).get("max_tokens", 0)) > 0
-            for task in WEB_LLM_TASKS
-        },
+        default_llm_tasks={task["name"]: False for task in WEB_LLM_TASKS},
         default_llm_models={task["name"]: "default" for task in WEB_LLM_TASKS},
         telegram_model_options=WEB_LLM_MODEL_PRESETS["telegram_report"],
     )
@@ -1911,6 +2204,7 @@ def run_manual():
             news_days=options["news_days"],
             news_max_articles=options["news_max_articles"],
             channel_overrides=options["channel_overrides"],
+            send_prompt_files=options.get("send_prompt_files"),
             llm_overrides=options.get("llm_overrides"),
         )
     else:
@@ -1920,8 +2214,11 @@ def run_manual():
             news_days=options["news_days"],
             news_max_articles=options["news_max_articles"],
             transaction_limit=options["transaction_limit"],
+            skip_transactions=options.get("skip_transactions", False),
             channel_overrides=options["channel_overrides"],
+            send_prompt_files=options.get("send_prompt_files"),
             llm_overrides=options.get("llm_overrides"),
+            output_mode=options.get("output_mode"),
         )
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
@@ -1979,15 +2276,16 @@ def run_prompt(run_id: str, task_name: str):
         if not state:
             return jsonify({"success": False, "error": "run_id 를 찾을 수 없습니다."}), 404
         result = state.get("result") or {}
-        prompt_files = result.get("prompt_files") or {}
-        prompt_path = prompt_files.get(task_name)
+        prompt_files = result.get("prompt_files") or result.get("contents_summary", {}).get("prompt_files") or {}
+        authoring_files = result.get("authoring_files") or result.get("contents_summary", {}).get("authoring_files") or {}
+        prompt_path = authoring_files.get(task_name) or prompt_files.get(task_name)
 
     if not prompt_path:
-        return jsonify({"success": False, "error": "해당 실행에서 생성된 프롬프트를 찾을 수 없습니다."}), 404
+        return jsonify({"success": False, "error": "해당 실행에서 생성된 파일을 찾을 수 없습니다."}), 404
 
     path = Path(prompt_path)
     if not path.exists():
-        return jsonify({"success": False, "error": "프롬프트 파일을 찾을 수 없습니다."}), 404
+        return jsonify({"success": False, "error": "파일을 찾을 수 없습니다."}), 404
 
     return jsonify(
         {
@@ -2023,6 +2321,22 @@ def test_telegram():
         "이 메시지가 도착하면 텔레그램 봇/채팅 설정은 정상입니다."
     )
     result = send_telegram(message, enabled=True)
+    status_code = 200 if result.get("success") else 500
+    return jsonify(result), status_code
+
+
+@app.route("/test/telegram/prompts", methods=["POST"])
+def test_telegram_prompt_files():
+    prompt_dir = BASE_DIR / "reports" / "prompts"
+    prompt_files = {
+        path.stem.replace("_prompt", ""): str(path)
+        for path in sorted(prompt_dir.glob("*_prompt.txt"))
+        if path.is_file()
+    }
+    if not prompt_files:
+        return jsonify({"success": False, "error": "전송할 프롬프트 파일을 찾을 수 없습니다."}), 404
+
+    result = send_telegram_documents(prompt_files, enabled=True)
     status_code = 200 if result.get("success") else 500
     return jsonify(result), status_code
 

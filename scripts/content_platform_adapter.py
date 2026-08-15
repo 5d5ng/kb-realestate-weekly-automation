@@ -36,6 +36,10 @@ def _sha256(payload: Any) -> str:
     return f"sha256:{hashlib.sha256(_canonical_bytes(payload)).hexdigest()}"
 
 
+def _file_sha256(path: Path) -> str:
+    return "sha256:%s" % hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def load_snapshot(snapshot_path: Path) -> dict[str, Any]:
     if not snapshot_path.is_file():
         raise FileNotFoundError(f"KB data snapshot not found: {snapshot_path}")
@@ -84,6 +88,46 @@ def build_source_bundle(
             for path in report_images
             if path
         )
+    latest_date = str(snapshot.get("latest_date") or "").strip()
+    weekly_report_path = BASE_DIR / "reports" / "weekly_report.md"
+    legacy_card_script_path = BASE_DIR / "reports" / "card_news_script.md"
+    review_candidates = [
+        BASE_DIR / "outputs" / f"{latest_date}_naver_blog_draft_codex_desktop.md",
+        BASE_DIR / "outputs" / f"{latest_date}_kb_weekly_cardnews_codex_desktop_canva_import.html",
+        BASE_DIR / "outputs" / f"{latest_date}_kb_weekly_instagram_media" / "manifest.json",
+    ]
+    if weekly_report_path.is_file():
+        artifacts.append({
+            "kind": "primary_source",
+            "name": "weekly_report",
+            "path": str(weekly_report_path.resolve()),
+            "size_bytes": weekly_report_path.stat().st_size,
+            "sha256": _file_sha256(weekly_report_path),
+        })
+    if legacy_card_script_path.is_file():
+        artifacts.append({
+            "kind": "legacy_review_artifact",
+            "name": "card_news_script",
+            "path": str(legacy_card_script_path.resolve()),
+            "size_bytes": legacy_card_script_path.stat().st_size,
+        })
+    artifacts.extend(
+        {
+            "kind": "review_artifact",
+            "path": str(path.resolve()),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in review_candidates
+        if latest_date and path.is_file()
+    )
+    degraded = bool(
+        isinstance(refresh_result, dict)
+        and (
+            refresh_result.get("degraded") is True
+            or refresh_result.get("fallback_to_existing_cache") is True
+            or refresh_result.get("fallback_to_cache") is True
+        )
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "domain": DOMAIN,
@@ -105,6 +149,14 @@ def build_source_bundle(
                 "refresh_performed": refresh_result is not None,
                 "external_delivery_performed": False,
                 "project_llm_called": False,
+                "api_call_count": 0,
+                "degraded": degraded,
+            },
+            "authoring": {
+                "primary_source": str(weekly_report_path.resolve()) if weekly_report_path.is_file() else None,
+                "primary_source_sha256": _file_sha256(weekly_report_path) if weekly_report_path.is_file() else None,
+                "validation_source": str(resolved_path),
+                "legacy_card_news_script": str(legacy_card_script_path.resolve()) if legacy_card_script_path.is_file() else None,
             },
             "refresh_result": refresh_result,
         },

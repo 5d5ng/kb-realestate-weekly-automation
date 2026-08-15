@@ -1,6 +1,8 @@
 """
-KB부동산 주간 보도자료/docx + 시계열/xlsx 다운로드 및 분석
-- 매매/전세 상하위 5개 지역 추출
+KB부동산 주간 보도자료/docx + 시계열/xlsx 다운로드 및 분석.
+
+콘텐츠에는 서울 25개 구와 수도권/비수도권 상승 상위 지역을 제공하고,
+각 지역이 현재 몇 주 연속 상승 중인지 계산한다.
 """
 from __future__ import annotations
 
@@ -42,9 +44,17 @@ EXCLUDED_REGIONS = {
 # 시트 헤더에서 섹션 구분자로 사용되는 지역명 집합
 SECTION_MARKERS = {
     "서울특별시", "6개광역시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
-    "대전광역시", "울산광역시", "5개광역시", "수도권", "세종특별자치시", "경기도",
+    "전남광주통합특별시", "대전광역시", "울산광역시", "5개광역시", "수도권", "세종특별자치시", "경기도",
+    "강원도", "강원특별자치도",
     "충청북도", "충청남도", "전라북도", "전북특별자치도", "전라남도", "경상북도",
     "경상남도", "제주도", "제주특별자치도", "기타지방",
+}
+
+REGION_HEADER_ALIASES = {
+    # 2026-07-27 전세증감 시트에만 들어간 중복 접미사를 보정합니다.
+    "강원특별자치도도": "강원특별자치도",
+    # 통합 특별시 전환 시트의 구 광주 하위 구는 기존 KB 조회명으로 유지합니다.
+    "(구)광주광역시": "광주광역시",
 }
 
 CAPITAL_REGION_PREFIXES = ("서울특별시", "경기도", "인천광역시")
@@ -350,28 +360,42 @@ def _download_file(file_info: dict[str, Any], dest_dir: Path) -> Path:
     raise RuntimeError(f"KB 파일 다운로드 실패: {filename} ({last_error})")
 
 
+def _find_dated_rows(ws) -> list[list[Any]]:
+    """시트의 날짜 데이터 행을 오래된 순서대로 반환한다."""
+    rows = [list(row) for row in ws.iter_rows(min_row=1, values_only=True) if isinstance(row[0], datetime)]
+    if len(rows) < 2:
+        raise RuntimeError(f"시트 '{ws.title}'에서 데이터 행을 2개 이상 찾지 못했습니다.")
+    return rows
+
+
 def _find_latest_two_rows(ws) -> tuple[list[Any], list[Any]]:
     """시트에서 날짜 기준 마지막 2개 데이터 행 반환."""
-    prev_row: list[Any] | None = None
-    last_row: list[Any] | None = None
-    for row in ws.iter_rows(min_row=1, values_only=True):
-        if isinstance(row[0], datetime):
-            prev_row = last_row
-            last_row = list(row)
-    if prev_row is None or last_row is None:
-        raise RuntimeError(f"시트 '{ws.title}'에서 데이터 행을 2개 이상 찾지 못했습니다.")
-    return prev_row, last_row
+    dated_rows = _find_dated_rows(ws)
+    return dated_rows[-2], dated_rows[-1]
+
+
+def _consecutive_positive_weeks(dated_rows: list[list[Any]], column_index: int) -> int:
+    """최신 주부터 0보다 큰 값이 연속된 주 수를 계산한다."""
+    streak = 0
+    for row in reversed(dated_rows):
+        value = row[column_index] if column_index < len(row) else None
+        if not isinstance(value, (int, float)) or value <= 0:
+            break
+        streak += 1
+    return streak
 
 
 def _parse_change_sheet(ws) -> tuple[str, list[dict[str, Any]]]:
     """
     매매증감/전세증감 시트 파싱.
     반환: (기준일 문자열, 지역별 변동 리스트)
-    각 항목: {"region": str, "current": float, "delta": float}
+    각 항목: {"region": str, "current": float, "delta": float,
+              "consecutive_rise_weeks": int}
     """
     # 2행이 헤더(지역명)
     header = list(next(ws.iter_rows(min_row=2, max_row=2, values_only=True)))
-    prev_row, last_row = _find_latest_two_rows(ws)
+    dated_rows = _find_dated_rows(ws)
+    prev_row, last_row = dated_rows[-2], dated_rows[-1]
 
     latest_date = last_row[0].strftime("%Y-%m-%d") if isinstance(last_row[0], datetime) else str(last_row[0])
     current_section = ""
@@ -381,7 +405,7 @@ def _parse_change_sheet(ws) -> tuple[str, list[dict[str, Any]]]:
     for idx, raw in enumerate(header):
         if idx == 0 or not isinstance(raw, str):
             continue
-        region = raw.strip()
+        region = REGION_HEADER_ALIASES.get(raw.strip(), raw.strip())
         if not region:
             continue
 
@@ -418,9 +442,17 @@ def _parse_change_sheet(ws) -> tuple[str, list[dict[str, Any]]]:
             "region": " ".join(display_parts),
             "current": float(curr),
             "delta": float(curr - prev),
+            "consecutive_rise_weeks": _consecutive_positive_weeks(dated_rows, idx),
         })
 
     return latest_date, records
+
+
+def _find_sheet_by_title_fragment(wb, fragment: str):
+    for sheet_name in wb.sheetnames:
+        if fragment in sheet_name:
+            return wb[sheet_name]
+    raise RuntimeError(f"'{fragment}' 시트를 찾지 못했습니다. 파일을 확인하세요.")
 
 
 def _top_bottom(records: list[dict[str, Any]], n: int = TOP_N) -> dict[str, list[dict]]:
@@ -459,6 +491,7 @@ def _select_ranked_regions(
             "region": r["region"],
             "current": round(r["current"], 3),
             "delta": round(r["delta"], 3),
+            "consecutive_rise_weeks": int(r.get("consecutive_rise_weeks") or 0),
         }
         for r in sorted_records[:n]
     ]
@@ -483,25 +516,41 @@ def _split_capital_regions(records: list[dict[str, Any]]) -> tuple[list[dict[str
 
 def extract_content_regions(data: dict[str, Any]) -> dict[str, Any]:
     """
-    콘텐츠용 지역 8개 버킷 추출.
+    상승 중심 콘텐츠용 지역 6개 섹션 추출.
 
-    - 수도권 매매 상승 상위 5 / 하위 5
-    - 수도권 전세 상승 상위 5 / 하위 5
-    - 비수도권 매매 상승 상위 5 / 하위 5
-    - 비수도권 전세 상승 상위 5 / 하위 5
+    - 서울 25개 구 매매 / 전세 현황
+    - 수도권 매매 / 전세 상승 상위 5
+    - 비수도권 매매 / 전세 상승 상위 5
+
+    상위 5개는 최신 주간 상승률이 양수인 지역만 대상으로 정렬한다.
+    서울 25개 구는 연속 상승 주수 내림차순, 동률은 지역명순으로 제공한다.
     """
     sale_capital, sale_non_capital = _split_capital_regions(data["sale"])
     rent_capital, rent_non_capital = _split_capital_regions(data["rent"])
 
+    def seoul_all(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected = [record for record in records if record["region"].startswith("서울특별시 ")]
+        selected.sort(key=lambda item: (-int(item.get("consecutive_rise_weeks") or 0), item["region"]))
+        return [
+            {
+                "region": record["region"],
+                "current": round(record["current"], 3),
+                "delta": round(record["delta"], 3),
+                "consecutive_rise_weeks": int(record.get("consecutive_rise_weeks") or 0),
+            }
+            for record in selected
+        ]
+
+    def rising(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [record for record in records if record["current"] > 0]
+
     return {
-        "capital_sale_top5": _select_ranked_regions(sale_capital, TOP_N, reverse=True),
-        "capital_sale_bottom5": _select_ranked_regions(sale_capital, TOP_N, reverse=False),
-        "capital_rent_top5": _select_ranked_regions(rent_capital, TOP_N, reverse=True),
-        "capital_rent_bottom5": _select_ranked_regions(rent_capital, TOP_N, reverse=False),
-        "non_capital_sale_top5": _select_ranked_regions(sale_non_capital, TOP_N, reverse=True),
-        "non_capital_sale_bottom5": _select_ranked_regions(sale_non_capital, TOP_N, reverse=False),
-        "non_capital_rent_top5": _select_ranked_regions(rent_non_capital, TOP_N, reverse=True),
-        "non_capital_rent_bottom5": _select_ranked_regions(rent_non_capital, TOP_N, reverse=False),
+        "seoul_sale_all": seoul_all(data["sale"]),
+        "seoul_rent_all": seoul_all(data["rent"]),
+        "capital_sale_top5": _select_ranked_regions(rising(sale_capital), TOP_N, reverse=True),
+        "capital_rent_top5": _select_ranked_regions(rising(rent_capital), TOP_N, reverse=True),
+        "non_capital_sale_top5": _select_ranked_regions(rising(sale_non_capital), TOP_N, reverse=True),
+        "non_capital_rent_top5": _select_ranked_regions(rising(rent_non_capital), TOP_N, reverse=True),
     }
 
 
@@ -563,8 +612,10 @@ def parse_excel(file_path: str | Path) -> dict[str, Any]:
         if len(sheet_names) < 3:
             raise RuntimeError("시트가 3개 미만입니다. 파일을 확인하세요.")
 
-        sale_date, sale_records = _parse_change_sheet(wb[sheet_names[1]])
-        rent_date, rent_records = _parse_change_sheet(wb[sheet_names[2]])
+        sale_sheet = _find_sheet_by_title_fragment(wb, "매매증감")
+        rent_sheet = _find_sheet_by_title_fragment(wb, "전세증감")
+        sale_date, sale_records = _parse_change_sheet(sale_sheet)
+        rent_date, rent_records = _parse_change_sheet(rent_sheet)
     finally:
         wb.close()
 
@@ -585,14 +636,12 @@ def extract_top_bottom(data: dict[str, Any], n: int = TOP_N) -> dict[str, Any]:
         "sale": {"top5": [...], "bottom5": [...]},
         "rent": {"top5": [...], "bottom5": [...]},
         "content_regions": {
+          "seoul_sale_all": [...],
+          "seoul_rent_all": [...],
           "capital_sale_top5": [...],
-          "capital_sale_bottom5": [...],
           "capital_rent_top5": [...],
-          "capital_rent_bottom5": [...],
           "non_capital_sale_top5": [...],
-          "non_capital_sale_bottom5": [...],
           "non_capital_rent_top5": [...],
-          "non_capital_rent_bottom5": [...],
         }
       }
     """
@@ -609,7 +658,7 @@ def run_analysis() -> dict[str, Any]:
     전체 분석 파이프라인 실행.
     1. 보도자료 docx + 시계열 xlsx 다운로드
     2. xlsx 시트 파싱
-    3. 상하위 5개 추출
+    3. 서울 전체 및 수도권/비수도권 상승 상위 지역 추출
     반환 형식:
       {
         "latest_date": "2026-03-14",
@@ -622,14 +671,12 @@ def run_analysis() -> dict[str, Any]:
           "bottom5": [...]
         },
         "content_regions": {
+          "seoul_sale_all": [...],
+          "seoul_rent_all": [...],
           "capital_sale_top5": [...],
-          "capital_sale_bottom5": [...],
           "capital_rent_top5": [...],
-          "capital_rent_bottom5": [...],
           "non_capital_sale_top5": [...],
-          "non_capital_sale_bottom5": [...],
           "non_capital_rent_top5": [...],
-          "non_capital_rent_bottom5": [...],
         },
         "source_files": {
           "docx": "...",

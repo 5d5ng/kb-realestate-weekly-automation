@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dave.kb-realestate-weekly</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/dave/Project/kb-realestate-weekly-automation/.venv/bin/python</string>
+    <string>/Users/dave/Project/kb-realestate-weekly-automation/scripts/run_scheduled_pipeline.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/dave/Project/kb-realestate-weekly-automation</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>6</integer>
+    <key>Hour</key>
+    <integer>11</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/dave/Project/kb-realestate-weekly-automation/logs/launchd_weekly.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dave/Project/kb-realestate-weekly-automation/logs/launchd_weekly.err.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

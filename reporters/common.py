@@ -12,16 +12,17 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROMPT_OUTPUT_DIR = BASE_DIR / "reports" / "prompts"
+PROMPT_ARCHIVE_DIR = PROMPT_OUTPUT_DIR / "archive"
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / ".env.example", override=False)
 
 TIMEOUT_SEC = 60
 
 DEFAULT_TASK_MODELS = {
-    "telegram_report": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 5000},
+    "telegram_report": {"provider": "none", "model": "", "max_tokens": 0},
     "alimtalk_message": {"provider": "none", "model": "", "max_tokens": 0},
-    "instagram_caption": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 700},
-    "card_news_script": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "max_tokens": 1000},
+    "instagram_caption": {"provider": "none", "model": "", "max_tokens": 0},
+    "card_news_script": {"provider": "none", "model": "", "max_tokens": 0},
     "naver_blog_post": {"provider": "none", "model": "", "max_tokens": 0},
 }
 
@@ -30,15 +31,14 @@ BACKUP_TASK_MODELS = {
 }
 
 BUCKET_LABELS = {
+    "seoul_sale_all": "서울 25개 구 매매 상승 현황",
+    "seoul_rent_all": "서울 25개 구 전세 상승 현황",
     "capital_sale_top5": "수도권 매매 상승 상위 5",
-    "capital_sale_bottom5": "수도권 매매 하위 5",
     "capital_rent_top5": "수도권 전세 상승 상위 5",
-    "capital_rent_bottom5": "수도권 전세 하위 5",
     "non_capital_sale_top5": "비수도권 매매 상승 상위 5",
-    "non_capital_sale_bottom5": "비수도권 매매 하위 5",
     "non_capital_rent_top5": "비수도권 전세 상승 상위 5",
-    "non_capital_rent_bottom5": "비수도권 전세 하위 5",
 }
+CONTENT_BUCKET_ORDER = tuple(BUCKET_LABELS.keys())
 
 SESSION = requests.Session()
 SESSION.headers.update(
@@ -171,12 +171,8 @@ def format_number(value: Any) -> str:
 
 def format_region_item(item: dict[str, Any]) -> str:
     region = item.get("region", "")
-    current = format_number(item.get("current", ""))
-    delta = item.get("delta")
-    delta_text = ""
-    if isinstance(delta, (int, float)):
-        delta_text = f", 전주대비 {delta:+.3f}"
-    return f"{region}({current}{delta_text})"
+    weeks = int(item.get("consecutive_rise_weeks") or 0)
+    return f"{region}(연속 상승 {weeks}주)"
 
 
 def format_region_bucket(items: list[dict[str, Any]], limit: int = 5) -> str:
@@ -372,23 +368,141 @@ def format_transactions_context(
     return "\n".join(lines).strip()
 
 
+def format_bucket_metric_table(items: list[dict[str, Any]] | None) -> str:
+    lines = [
+        "| 순위 | 지역 | 연속 상승 |",
+        "|---|---|---:|",
+    ]
+    for index, item in enumerate(items, start=1):
+        weeks = int(item.get("consecutive_rise_weeks") or 0)
+        lines.append(f"| {index} | {clean_text(item.get('region'))} | {weeks}주 |")
+    return "\n".join(lines)
+
+
+def _extract_bucket_trade_rows(
+    region_name: str,
+    area_mapping: dict[str, Any] | None,
+    *,
+    max_area_types: int = 2,
+) -> list[dict[str, str]]:
+    if not isinstance(area_mapping, dict) or not area_mapping:
+        return [
+            {
+                "region": region_name,
+                "area_type": "-",
+                "complex_name": "최근 거래 없음",
+                "contract_date": "-",
+                "sale_price": "최근 거래 없음",
+                "rent_price": "최근 전세 없음",
+            }
+        ]
+
+    rows: list[dict[str, str]] = []
+    for area_key, area_info in list(area_mapping.items())[:max_area_types]:
+        area_info = area_info or {}
+        trades = list(area_info.get("trades") or [])
+        rent_trades = list(area_info.get("rent_trades") or [])
+        trade = trades[0] if trades else None
+
+        related_rents = list((trade or {}).get("related_rent_trades") or [])
+        rent_trade = related_rents[0] if related_rents else (rent_trades[0] if rent_trades else None)
+
+        rows.append(
+            {
+                "region": region_name,
+                "area_type": f"{area_key}타입",
+                "complex_name": clean_text((trade or rent_trade or {}).get("name")) or "최근 거래 없음",
+                "contract_date": clean_text((trade or rent_trade or {}).get("contract_date") or (trade or rent_trade or {}).get("date")) or "-",
+                "sale_price": format_price(trade.get("price")) if trade else "최근 거래 없음",
+                "rent_price": format_price(rent_trade.get("price")) if rent_trade else "최근 전세 없음",
+            }
+        )
+
+    if not rows:
+        rows.append(
+            {
+                "region": region_name,
+                "area_type": "-",
+                "complex_name": "최근 거래 없음",
+                "contract_date": "-",
+                "sale_price": "최근 거래 없음",
+                "rent_price": "최근 전세 없음",
+            }
+        )
+    return rows
+
+
+def format_bucket_transaction_table(
+    bucket_items: list[dict[str, Any]] | None,
+    region_mapping: dict[str, Any] | None,
+    *,
+    max_area_types: int = 2,
+) -> str:
+    lines = [
+        "| 지역 | 타입 | 단지명 | 계약일 | 매매가 | 전세참고 |",
+        "|---|---|---|---|---:|---:|",
+    ]
+    normalized_mapping = region_mapping if isinstance(region_mapping, dict) else {}
+    for item in bucket_items:
+        region_name = clean_text(item.get("region"))
+        rows = _extract_bucket_trade_rows(
+            region_name,
+            normalized_mapping.get(region_name),
+            max_area_types=max_area_types,
+        )
+        for row in rows:
+            lines.append(
+                f"| {row['region']} | {row['area_type']} | {row['complex_name']} | "
+                f"{row['contract_date']} | {row['sale_price']} | {row['rent_price']} |"
+            )
+    return "\n".join(lines)
+
+
+def format_bucket_linked_context(
+    analysis: dict[str, Any],
+    transactions: dict[str, Any] | None,
+    *,
+    max_area_types: int = 2,
+) -> str:
+    content_regions = analysis.get("content_regions", {}) or {}
+    if not isinstance(content_regions, dict) or not content_regions:
+        return "없음"
+
+    normalized_transactions = transactions if isinstance(transactions, dict) else {}
+    sections: list[str] = []
+    for bucket_name in CONTENT_BUCKET_ORDER:
+        bucket_items = content_regions.get(bucket_name) or []
+        bucket_label = BUCKET_LABELS.get(bucket_name, bucket_name)
+        bucket_transactions = normalized_transactions.get(bucket_name)
+        sections.append(
+            "\n".join(
+                [
+                    f"[{bucket_label}]",
+                    "[버킷 수치]",
+                    format_bucket_metric_table(bucket_items),
+                    "",
+                    "[해당 지역 실거래 표]",
+                    format_bucket_transaction_table(
+                        bucket_items,
+                        bucket_transactions,
+                        max_area_types=max_area_types,
+                    ),
+                ]
+            ).strip()
+        )
+    return "\n\n".join(sections).strip()
+
+
 def build_context(
     analysis: dict,
     news: list[dict[str, Any]],
     transactions: dict[str, Any] | None = None,
 ) -> str:
     latest_date = analysis.get("latest_date", "")
-    sale = analysis.get("sale", {})
-    rent = analysis.get("rent", {})
     sections = [
-        f"[분석 기준일]\n{latest_date}\n\n"
-        f"[매매 상위]\n{format_region_bucket(sale.get('top5', []))}\n\n"
-        f"[매매 하위]\n{format_region_bucket(sale.get('bottom5', []))}\n\n"
-        f"[전세 상위]\n{format_region_bucket(rent.get('top5', []))}\n\n"
-        f"[전세 하위]\n{format_region_bucket(rent.get('bottom5', []))}"
+        f"[분석 기준일]\n{latest_date}",
+        f"[6개 상승 섹션 연동 데이터]\n{format_bucket_linked_context(analysis, transactions)}",
     ]
-    if transactions is not None:
-        sections.append(f"[실거래 요약]\n{format_transactions_context(transactions)}")
     sections.append(f"[주요 뉴스]\n{format_news_bucket(news)}")
     return "\n\n".join(sections)
 
@@ -424,12 +538,15 @@ def save_prompt_file(
     user_prompt: str,
     *,
     fallback_text: str | None = None,
-) -> str:
+    latest_date: str | None = None,
+) -> dict[str, str]:
     PROMPT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    PROMPT_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     config = resolve_task_config(task_name)
+    generated_at = datetime.now()
     sections = [
         f"[task]\n{task_name}",
-        f"[generated_at]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"[generated_at]\n{generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
         f"[provider]\n{config['provider']}",
         f"[model]\n{config['model'] or '(none)'}",
         f"[max_tokens]\n{config['max_tokens']}",
@@ -439,9 +556,22 @@ def save_prompt_file(
     if fallback_text:
         sections.append(f"[fallback_preview]\n{fallback_text.strip()}")
 
-    output_path = PROMPT_OUTPUT_DIR / f"{task_name}_prompt.txt"
-    output_path.write_text("\n\n".join(sections).strip() + "\n", encoding="utf-8")
-    return str(output_path)
+    content = "\n\n".join(sections).strip() + "\n"
+    latest_path = PROMPT_OUTPUT_DIR / f"{task_name}_prompt.txt"
+
+    archive_name_parts = [generated_at.strftime("%Y-%m-%d_%H%M%S")]
+    normalized_latest_date = clean_text(latest_date).replace("/", "-")
+    if normalized_latest_date:
+        archive_name_parts.append(normalized_latest_date)
+    archive_name_parts.append(f"{task_name}_prompt.txt")
+    archive_path = PROMPT_ARCHIVE_DIR / "_".join(archive_name_parts)
+
+    latest_path.write_text(content, encoding="utf-8")
+    archive_path.write_text(content, encoding="utf-8")
+    return {
+        "latest": str(latest_path),
+        "archive": str(archive_path),
+    }
 
 
 def _extract_openai_text(payload: dict[str, Any]) -> str:
@@ -576,7 +706,7 @@ def generate_with_llm(
     model = config["model"]
     max_tokens = config["max_tokens"]
     allow_backup = bool(config.get("allow_backup", True))
-    if task_name == "telegram_report":
+    if task_name == "telegram_report" and provider != "none":
         provider_floor = 5000 if provider in {"gemini", "google"} else 4000
         max_tokens = max(int(max_tokens or 0), provider_floor)
 
