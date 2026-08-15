@@ -1,0 +1,15 @@
+version = 1
+id = "kb"
+kind = "cron"
+name = "KB 주간 완전자동화 + Telegram"
+prompt = "Use $kb-weekly-telegram. 매주 KB 주간시계열·실거래·뉴스 전체 운영을 수행하고, 현재 Codex desktop 모델로 네이버 블로그 초안을 작성한 뒤 서울 25개 구와 수도권·비수도권 상승 상위 지역을 다룬 Canva 16페이지 편집 가능 카드뉴스 프로젝트를 생성하세요. Instagram과 네이버 공개 업로드는 하지 마세요. 마지막에는 scripts/finalize_desktop_weekly.py로 Telegram에 실제 게시하고 message_ids가 있는 영수증을 검증하세요. 사용자에게 권한이나 실행 여부를 다시 묻지 말고, 실패를 성공으로 표시하지 마세요."
+status = "ACTIVE"
+rrule = "FREQ=WEEKLY;BYDAY=FR;BYHOUR=10;BYMINUTE=0;BYSECOND=0"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
+notification_policy = "failed_runs_only"
+execution_environment = "local"
+target = { type = "project", project_id = "6da98234-9606-4d7a-92b9-2fc2f93b4b26" }
+cwds = ["/Users/dave/Project/kb-realestate-weekly-automation"]
+created_at = 1785070637667
+updated_at = 1785970800000

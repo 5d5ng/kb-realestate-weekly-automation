@@ -1,0 +1,4 @@
+interface:
+  display_name: "KB 주간 Telegram 자동화"
+  short_description: "KB 자료부터 Canva와 Telegram까지 자동 처리"
+  default_prompt: "Use $kb-weekly-telegram to run the KB weekly workflow, create the Naver draft and Canva project, and require Telegram delivery."

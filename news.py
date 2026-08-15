@@ -690,9 +690,31 @@ def get_weekly_news(
         raw_articles.extend(fetch_news_from_newspaper(press_source, days=days))
 
     deduped_raw = _dedupe_articles(raw_articles)
+    candidate_limit = max(int(max_articles) * 4, int(max_articles), 12)
+    preliminary_candidates: list[dict[str, Any]] = []
+    for article in deduped_raw:
+        if not article.get("is_naver_news"):
+            continue
+        if not _is_allowed_publisher(article.get("publisher", "")):
+            continue
+        if _contains_excluded_keyword(article):
+            continue
+        priority_score, matched_keywords = _score_article(article)
+        article["priority_score"] = priority_score
+        article["matched_keywords"] = matched_keywords
+        preliminary_candidates.append(article)
+
+    preliminary_candidates = sorted(
+        preliminary_candidates,
+        key=lambda item: (
+            item.get("priority_score", 0),
+            item.get("published_at", ""),
+        ),
+        reverse=True,
+    )[:candidate_limit]
     enriched_articles: list[dict[str, Any]] = []
 
-    for article in deduped_raw:
+    for article in preliminary_candidates:
         article_url = article.get("link") or article.get("originallink")
         details = _extract_article_details(article_url)
 
